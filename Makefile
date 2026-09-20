@@ -13,7 +13,7 @@ EE_OBJS := \
     $(BUILD)/client.o \
     $(BUILD)/core.o
 
-.PHONY: all clean irx check package
+.PHONY: all clean irx check package host-test
 
 all: $(BUILD)/librfauds2.a $(BUILD)/rfauds2.irx
 
@@ -34,6 +34,13 @@ $(BUILD)/rfauds2.irx: src/iop/src/main.c src/iop/src/spu2_direct.c src/iop/src/s
 	cp src/iop/irx/rfauds2.irx $@
 
 irx: $(BUILD)/rfauds2.irx
+
+host-test: | $(BUILD)
+	cc -std=c99 -O2 -Wall -Wextra -Werror \
+		-Itests/include -Iinclude \
+		src/ee/core.c tests/audio_test.c \
+		-o $(BUILD)/rfauds2-host-test
+	$(BUILD)/rfauds2-host-test
 
 check: all
 	@test -s $(BUILD)/librfauds2.a

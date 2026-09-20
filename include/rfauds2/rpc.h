@@ -4,7 +4,7 @@
 #include <tamtypes.h>
 
 #define RFAUDS2_RPC_SID 0x52464132u /* "RFA2" */
-#define RFAUDS2_RPC_MAX_FRAMES 512u
+#define RFAUDS2_RPC_MAX_FRAMES 960u
 
 enum {
     RFAUDS2_RPC_INIT = 0,

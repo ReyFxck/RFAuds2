@@ -106,6 +106,43 @@ static void test_cubic_constant(void)
     }
 }
 
+
+static void test_sinc8_constant(void)
+{
+    rfauds2_rate_converter c;
+    s16 input[20];
+    s16 output[48];
+    u32 consumed = 0;
+    u32 produced;
+    u32 i;
+
+    for (i = 0; i < 20; ++i)
+        input[i] = -2345;
+
+    check_int(
+        "sinc8 init",
+        rfauds2_rate_converter_init(
+            &c, 32000, 48000, 1, RFAUDS2_RESAMPLE_SINC8),
+        0);
+
+    produced = rfauds2_rate_converter_process_s16(
+        &c, input, 20, output, 48, &consumed);
+
+    if (produced == 0)
+        fail("sinc8 produced");
+
+    for (i = 0; i < produced; ++i) {
+        if (output[i] != -2345)
+            fail("sinc8 constant");
+    }
+
+    check_int(
+        "sinc8 rejects downsample",
+        rfauds2_rate_converter_init(
+            &c, 96000, 48000, 1, RFAUDS2_RESAMPLE_SINC8),
+        -6);
+}
+
 static void test_mixer_saturation(void)
 {
     s16 dst[] = { 30000, -30000 };
@@ -162,6 +199,7 @@ int main(void)
     test_exact_copy();
     test_linear_midpoint();
     test_cubic_constant();
+    test_sinc8_constant();
     test_mixer_saturation();
     test_buses();
 

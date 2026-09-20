@@ -25,6 +25,19 @@ typedef struct {
     u64 step_q32;
 } rfauds2_rate_converter;
 
+typedef enum {
+    RFAUDS2_BUS_GAME = 0,
+    RFAUDS2_BUS_MUSIC = 1,
+    RFAUDS2_BUS_SFX = 2,
+    RFAUDS2_BUS_UI = 3,
+    RFAUDS2_BUS_COUNT = 4
+} rfauds2_bus;
+
+typedef struct {
+    s32 gain_q15[RFAUDS2_BUS_COUNT];
+    u8 muted[RFAUDS2_BUS_COUNT];
+} rfauds2_bus_mixer;
+
 typedef struct {
     u32 queued_frames;
     u32 capacity_frames;
@@ -79,6 +92,29 @@ void rfauds2_mix_s16(
     const s16 *source,
     u32 sample_count,
     s32 gain_q15);
+
+void rfauds2_bus_mixer_init(rfauds2_bus_mixer *mixer);
+
+int rfauds2_bus_mixer_set_gain(
+    rfauds2_bus_mixer *mixer,
+    rfauds2_bus bus,
+    s32 gain_q15);
+
+int rfauds2_bus_mixer_set_mute(
+    rfauds2_bus_mixer *mixer,
+    rfauds2_bus bus,
+    int muted);
+
+void rfauds2_bus_mixer_clear_s16(
+    s16 *destination,
+    u32 sample_count);
+
+int rfauds2_bus_mixer_mix_s16(
+    const rfauds2_bus_mixer *mixer,
+    rfauds2_bus bus,
+    s16 *destination,
+    const s16 *source,
+    u32 sample_count);
 
 #ifdef __cplusplus
 }

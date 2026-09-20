@@ -143,6 +143,87 @@ static void test_sinc8_constant(void)
         -6);
 }
 
+static void test_stream_chunk_continuity_mode(
+    const char *name,
+    rfauds2_resample_mode mode)
+{
+    rfauds2_rate_converter c;
+    s16 pending[128];
+    s16 output[256];
+    u32 pending_frames = 0;
+    u32 produced_total = 0;
+    u32 iteration;
+
+    check_int(
+        name,
+        rfauds2_rate_converter_init(
+            &c, 32000, 48000, 1, mode),
+        0);
+
+    for (iteration = 0; iteration < 1000; ++iteration) {
+        u32 add = 37;
+        u32 consumed = 0;
+        u32 produced;
+        u32 i;
+
+        if (pending_frames + add > 128)
+            fail("stream pending capacity");
+
+        for (i = 0; i < add; ++i)
+            pending[pending_frames + i] = 777;
+
+        pending_frames += add;
+
+        produced = rfauds2_rate_converter_process_s16(
+            &c,
+            pending,
+            pending_frames,
+            output,
+            256,
+            &consumed);
+
+        if (produced == 0)
+            fail("stream produced");
+
+        for (i = 0; i < produced; ++i) {
+            if (output[i] != 777)
+                fail("stream constant continuity");
+        }
+
+        if (consumed > pending_frames)
+            fail("stream consumed range");
+
+        pending_frames -= consumed;
+        memmove(
+            pending,
+            pending + consumed,
+            pending_frames * sizeof(pending[0]));
+
+        produced_total += produced;
+    }
+
+    /*
+     * 37,000 source frames at 32 -> 48 kHz should yield about 55,500
+     * destination frames. A few frames remain as look-ahead/tail state,
+     * depending on the interpolation kernel.
+     */
+    if (produced_total < 55450u || produced_total > 55550u)
+        fail("stream long-run rate drift");
+}
+
+static void test_stream_chunk_continuity(void)
+{
+    test_stream_chunk_continuity_mode(
+        "stream linear init",
+        RFAUDS2_RESAMPLE_LINEAR);
+    test_stream_chunk_continuity_mode(
+        "stream cubic init",
+        RFAUDS2_RESAMPLE_CUBIC);
+    test_stream_chunk_continuity_mode(
+        "stream sinc8 init",
+        RFAUDS2_RESAMPLE_SINC8);
+}
+
 static void test_mixer_saturation(void)
 {
     s16 dst[] = { 30000, -30000 };
@@ -200,6 +281,7 @@ int main(void)
     test_linear_midpoint();
     test_cubic_constant();
     test_sinc8_constant();
+    test_stream_chunk_continuity();
     test_mixer_saturation();
     test_buses();
 

@@ -42,9 +42,13 @@ An underrun is handled differently: the unavailable portion of the next
 512-frame hardware block is filled with zeroes. RFAuds2 never intentionally
 replays old PCM to hide a shortage.
 
-A practical initial latency for emulator testing is about 43 ms, which rounds
-to 2048 frames. The correct production default still needs real FAT/Slim PS2
-measurements.
+A practical initial latency for emulator testing is about 43 ms. Before
+calling `rfauds2_start()`, queue at least three 512-frame blocks when possible.
+The IOP primes both hardware DMA halves from queued PCM at start, so a producer
+that prebuffers avoids beginning playback with zero-filled blocks and keeps one
+block of queue headroom for normal frame jitter.
+
+The correct production default still needs real FAT/Slim PS2 measurements.
 
 ## Diagnostics
 

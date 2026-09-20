@@ -25,7 +25,7 @@
 - [x] saturating Q15 S16 mixer helper
 - [x] cubic converter
 - [ ] optional band-limited/sinc converter
-- [ ] reusable multi-stream / Game-Music-SFX-UI bus mixer
+- [x] reusable multi-stream / Game-Music-SFX-UI bus mixer
 
 ## Integration
 

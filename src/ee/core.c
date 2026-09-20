@@ -278,3 +278,88 @@ void rfauds2_mix_s16(
         destination[i] = saturate_s16(mixed);
     }
 }
+
+
+void rfauds2_bus_mixer_init(rfauds2_bus_mixer *mixer)
+{
+    u32 i;
+
+    if (mixer == 0)
+        return;
+
+    for (i = 0; i < RFAUDS2_BUS_COUNT; ++i) {
+        mixer->gain_q15[i] = RFAUDS2_Q15_ONE;
+        mixer->muted[i] = 0;
+    }
+}
+
+int rfauds2_bus_mixer_set_gain(
+    rfauds2_bus_mixer *mixer,
+    rfauds2_bus bus,
+    s32 gain_q15)
+{
+    if (mixer == 0)
+        return -1;
+
+    if ((u32)bus >= RFAUDS2_BUS_COUNT)
+        return -2;
+
+    if (gain_q15 < 0)
+        return -3;
+
+    mixer->gain_q15[(u32)bus] = gain_q15;
+    return 0;
+}
+
+int rfauds2_bus_mixer_set_mute(
+    rfauds2_bus_mixer *mixer,
+    rfauds2_bus bus,
+    int muted)
+{
+    if (mixer == 0)
+        return -1;
+
+    if ((u32)bus >= RFAUDS2_BUS_COUNT)
+        return -2;
+
+    mixer->muted[(u32)bus] = muted ? 1u : 0u;
+    return 0;
+}
+
+void rfauds2_bus_mixer_clear_s16(
+    s16 *destination,
+    u32 sample_count)
+{
+    u32 i;
+
+    if (destination == 0)
+        return;
+
+    for (i = 0; i < sample_count; ++i)
+        destination[i] = 0;
+}
+
+int rfauds2_bus_mixer_mix_s16(
+    const rfauds2_bus_mixer *mixer,
+    rfauds2_bus bus,
+    s16 *destination,
+    const s16 *source,
+    u32 sample_count)
+{
+    if (mixer == 0 || destination == 0 || source == 0)
+        return -1;
+
+    if ((u32)bus >= RFAUDS2_BUS_COUNT)
+        return -2;
+
+    if (mixer->muted[(u32)bus])
+        return 0;
+
+    rfauds2_mix_s16(
+        destination,
+        source,
+        sample_count,
+        mixer->gain_q15[(u32)bus]);
+
+    return 0;
+}

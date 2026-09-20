@@ -40,8 +40,10 @@ queue.
 ## Rate conversion
 
 The helper converter accepts arbitrary non-zero input/output rates, mono or
-stereo S16 and nearest/linear interpolation. It uses a Q32 phase accumulator.
+stereo S16 and nearest, linear or four-point cubic Lagrange interpolation.
+It uses a Q32 phase accumulator.
 
-The caller preserves the unconsumed frame reported by
-`input_frames_consumed` and prepends it to the next source chunk. Exact-rate
-streams use a copy path.
+The caller preserves the unconsumed source tail reported by
+`input_frames_consumed` and prepends it to the next chunk. Nearest/linear
+retain one source frame; cubic retains three so its four-point window stays
+continuous across chunk boundaries. Exact-rate streams use a copy path.

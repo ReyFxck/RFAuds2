@@ -12,7 +12,8 @@ extern "C" {
 
 typedef enum {
     RFAUDS2_RESAMPLE_NEAREST = 0,
-    RFAUDS2_RESAMPLE_LINEAR = 1
+    RFAUDS2_RESAMPLE_LINEAR = 1,
+    RFAUDS2_RESAMPLE_CUBIC = 2
 } rfauds2_resample_mode;
 
 typedef struct {

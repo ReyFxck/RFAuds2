@@ -40,7 +40,8 @@ queue.
 ## Rate conversion
 
 The helper converter accepts arbitrary non-zero input/output rates, mono or
-stereo S16 and nearest, linear or four-point cubic Lagrange interpolation.
+stereo S16 and nearest, linear, four-point cubic Lagrange or optional
+8-tap Lanczos-windowed sinc interpolation.
 It uses a Q32 phase accumulator.
 
 The caller preserves the unconsumed source tail reported by
@@ -66,3 +67,16 @@ appropriate bus with `rfauds2_bus_mixer_mix_s16()`.
 The helper is intentionally allocation-free and does not own producer
 lifetimes; an emulator or engine can keep one rate converter per producer and
 mix the resulting PCM into these buses.
+
+
+### Sinc8 scope
+
+`RFAUDS2_RESAMPLE_SINC8` is a 256-phase, 8-tap fixed-point
+Lanczos-windowed sinc kernel intended for **upsampling**, including common
+emulator paths such as 32 kHz -> 48 kHz and 44.1 kHz -> 48 kHz. The phase
+rows are normalized to unity gain.
+
+Sinc8 deliberately rejects downsampling for now because doing that correctly
+also requires a ratio-dependent anti-alias low-pass. Use linear/cubic for
+current downsampling needs rather than silently accepting an aliased sinc
+configuration.

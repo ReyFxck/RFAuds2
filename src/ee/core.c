@@ -1,6 +1,7 @@
 #include <rfauds2/rfauds2.h>
 
 #define RFAUDS2_Q15_ONE 32768
+#define RFAUDS2_Q16_ONE 65536
 
 static u64 divide_u64_u32(u64 numerator, u32 denominator)
 {
@@ -36,6 +37,51 @@ static s16 saturate_s16(s64 value)
     return (s16)value;
 }
 
+/*
+ * Four-point forward Lagrange interpolation.
+ *
+ * Unlike a Catmull-Rom form, this needs no hidden look-behind state: the
+ * caller simply keeps the three unconsumed source frames reported by the
+ * converter.  Coefficients are evaluated in Q16 and the final sample is
+ * saturated to S16.
+ */
+static s16 cubic_lagrange_s16(
+    s32 p0,
+    s32 p1,
+    s32 p2,
+    s32 p3,
+    u32 fraction)
+{
+    s64 t = (s64)(fraction >> 16);
+    s64 tm1 = t - RFAUDS2_Q16_ONE;
+    s64 tm2 = t - 2 * RFAUDS2_Q16_ONE;
+    s64 tm3 = t - 3 * RFAUDS2_Q16_ONE;
+    s64 c0;
+    s64 c1;
+    s64 c2;
+    s64 c3;
+    s64 value;
+
+    /* Each triple product is Q48; >>32 leaves a Q16 coefficient. */
+    c0 = -(((tm1 * tm2 * tm3) >> 32) / 6);
+    c1 =  (((t   * tm2 * tm3) >> 32) / 2);
+    c2 = -(((t   * tm1 * tm3) >> 32) / 2);
+    c3 =  (((t   * tm1 * tm2) >> 32) / 6);
+
+    value =
+        (s64)p0 * c0 +
+        (s64)p1 * c1 +
+        (s64)p2 * c2 +
+        (s64)p3 * c3;
+
+    if (value >= 0)
+        value = (value + RFAUDS2_Q16_ONE / 2) >> 16;
+    else
+        value = -(((-value) + RFAUDS2_Q16_ONE / 2) >> 16);
+
+    return saturate_s16(value);
+}
+
 int rfauds2_rate_converter_init(
     rfauds2_rate_converter *converter,
     u32 input_rate,
@@ -55,7 +101,8 @@ int rfauds2_rate_converter_init(
         return -3;
 
     if (mode != RFAUDS2_RESAMPLE_NEAREST &&
-        mode != RFAUDS2_RESAMPLE_LINEAR)
+        mode != RFAUDS2_RESAMPLE_LINEAR &&
+        mode != RFAUDS2_RESAMPLE_CUBIC)
         return -4;
 
     converter->input_rate = input_rate;
@@ -124,8 +171,12 @@ u32 rfauds2_rate_converter_process_s16(
         return frames;
     }
 
-    if (input_frames < 2)
+    if (converter->mode == RFAUDS2_RESAMPLE_CUBIC) {
+        if (input_frames < 4)
+            return 0;
+    } else if (input_frames < 2) {
         return 0;
+    }
 
     phase = converter->phase_q32;
 
@@ -134,8 +185,12 @@ u32 rfauds2_rate_converter_process_s16(
         u32 fraction = (u32)phase;
         u32 channel;
 
-        if (input_index + 1u >= input_frames)
+        if (converter->mode == RFAUDS2_RESAMPLE_CUBIC) {
+            if (input_index + 3u >= input_frames)
+                break;
+        } else if (input_index + 1u >= input_frames) {
             break;
+        }
 
         for (channel = 0; channel < channels; ++channel) {
             s32 a = input[input_index * channels + channel];
@@ -145,7 +200,7 @@ u32 rfauds2_rate_converter_process_s16(
             if (converter->mode == RFAUDS2_RESAMPLE_NEAREST) {
                 sample =
                     (fraction < 0x80000000u) ? a : b;
-            } else {
+            } else if (converter->mode == RFAUDS2_RESAMPLE_LINEAR) {
                 u32 fraction_q16 = fraction >> 16;
                 s32 delta = b - a;
                 s64 interpolated =
@@ -153,6 +208,18 @@ u32 rfauds2_rate_converter_process_s16(
 
                 sample =
                     a + (s32)(interpolated >> 16);
+            } else {
+                s32 p2 =
+                    input[(input_index + 2u) * channels + channel];
+                s32 p3 =
+                    input[(input_index + 3u) * channels + channel];
+
+                sample = cubic_lagrange_s16(
+                    a,
+                    b,
+                    p2,
+                    p3,
+                    fraction);
             }
 
             output[produced * channels + channel] =
@@ -167,8 +234,12 @@ u32 rfauds2_rate_converter_process_s16(
         u64 consumed64 = phase >> 32;
         u32 consumed;
 
-        if (consumed64 >= input_frames)
-            consumed = input_frames - 1u;
+        u32 retain =
+            (converter->mode == RFAUDS2_RESAMPLE_CUBIC) ? 3u : 1u;
+        u32 max_consumed = input_frames - retain;
+
+        if (consumed64 > max_consumed)
+            consumed = max_consumed;
         else
             consumed = (u32)consumed64;
 

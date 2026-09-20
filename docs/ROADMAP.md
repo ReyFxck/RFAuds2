@@ -23,7 +23,7 @@
 - [x] nearest converter
 - [x] linear converter
 - [x] saturating Q15 S16 mixer helper
-- [ ] cubic converter
+- [x] cubic converter
 - [ ] optional band-limited/sinc converter
 - [ ] reusable multi-stream / Game-Music-SFX-UI bus mixer
 

@@ -317,6 +317,17 @@ static int audio_start(void)
     clear_bytes(g_spu_buffer, sizeof(g_spu_buffer));
     clear_bytes(g_render_left, sizeof(g_render_left));
     clear_bytes(g_render_right, sizeof(g_render_right));
+
+    /*
+     * Prime both 512-frame DMA halves before enabling the SPU2 loop.
+     * Starting with two zeroed halves forced ~21 ms of silence before the
+     * first queued PCM could reach the hardware and made every stop/flush/
+     * restart transition audibly discontinuous.
+     */
+    fill_render_block();
+    copy_render_to_spu(g_spu_buffer + 0);
+    fill_render_block();
+    copy_render_to_spu(g_spu_buffer + (1u << 11));
     FlushDcache();
 
     g_started = 1;

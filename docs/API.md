@@ -47,3 +47,22 @@ The caller preserves the unconsumed source tail reported by
 `input_frames_consumed` and prepends it to the next chunk. Nearest/linear
 retain one source frame; cubic retains three so its four-point window stays
 continuous across chunk boundaries. Exact-rate streams use a copy path.
+
+
+## Bus mixer
+
+`rfauds2_bus_mixer` provides four named buses:
+
+- Game
+- Music
+- SFX
+- UI
+
+Each bus has an independent Q15 gain and mute flag. Initialize the state with
+`rfauds2_bus_mixer_init()`, clear an output block with
+`rfauds2_bus_mixer_clear_s16()`, then mix any number of sources into the
+appropriate bus with `rfauds2_bus_mixer_mix_s16()`.
+
+The helper is intentionally allocation-free and does not own producer
+lifetimes; an emulator or engine can keep one rate converter per producer and
+mix the resulting PCM into these buses.

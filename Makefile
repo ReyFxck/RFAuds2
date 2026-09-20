@@ -29,11 +29,9 @@ $(BUILD)/core.o: src/ee/core.c include/rfauds2/rfauds2.h | $(BUILD)
 $(BUILD)/librfauds2.a: $(EE_OBJS)
 	$(EE_AR) rcs $@ $^
 
-src/iop/rfauds2.irx: src/iop/main.c src/iop/spu2_direct.c src/iop/spu2_direct.h src/iop/imports.lst src/iop/irx_imports.h include/rfauds2/rpc.h
+$(BUILD)/rfauds2.irx: src/iop/src/main.c src/iop/src/spu2_direct.c src/iop/src/spu2_direct.h src/iop/src/imports.lst src/iop/src/irx_imports.h include/rfauds2/rpc.h | $(BUILD)
 	$(MAKE) -C src/iop clean all PS2SDKSRC="$(PS2SDKSRC)" PS2SDK="$(PS2SDK)"
-
-$(BUILD)/rfauds2.irx: src/iop/rfauds2.irx | $(BUILD)
-	cp $< $@
+	cp src/iop/irx/rfauds2.irx $@
 
 irx: $(BUILD)/rfauds2.irx
 

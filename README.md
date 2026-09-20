@@ -129,6 +129,13 @@ rfauds2_get_stats(&stats);
 Applications that generate another sample rate can use the included fixed-point
 rate converter before submitting to the device backend.
 
+## Documentation
+
+- [API](docs/API.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Emulator integration and diagnostics](docs/EMULATORS.md)
+- [Roadmap](docs/ROADMAP.md)
+
 ## Origin and license
 
 The initial implementation was developed as EF2Audio in EF2SDK by ReyFxck and

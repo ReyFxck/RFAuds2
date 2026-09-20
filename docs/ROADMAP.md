@@ -25,6 +25,7 @@
 - [x] saturating Q15 S16 mixer helper
 - [x] cubic converter
 - [x] optional 256-phase / 8-tap Sinc8 upsampler
+- [x] long-run chunked-stream continuity regression (32 kHz -> 48 kHz)
 - [ ] ratio-dependent anti-alias low-pass for sinc downsampling
 - [x] reusable multi-stream / Game-Music-SFX-UI bus mixer
 

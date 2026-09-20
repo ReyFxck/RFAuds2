@@ -13,6 +13,8 @@ so the backend can evolve and be reused independently.
 ## Design goals
 
 - native producer rates are allowed; the PS2 output rate is a backend detail;
+- nearest, linear and fixed-point four-point cubic resampling;
+- reusable Game/Music/SFX/UI bus mixing helpers;
 - fixed 48 kHz / stereo / signed 16-bit PCM at the SPU2 boundary;
 - explicit ring-buffer accounting instead of ambiguous read/write state;
 - backpressure instead of silently dropping the tail of a block;
@@ -32,8 +34,9 @@ continuous generated 32 kHz -> 48 kHz melody stream. The direct SPU2/DMA path,
 ring buffering, pause/resume, stop, flush, volume and latency controls are
 implemented.
 
-Real FAT/Slim PS2 validation and long-duration emulator stress testing are
-still required before calling the backend production-ready.
+Cross-build CI and deterministic host regressions cover the resampler and bus
+mixer. Real FAT/Slim PS2 validation and long-duration emulator stress testing
+are still required before calling the backend production-ready.
 
 ## Architecture
 

@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: ps2dev/ps2dev:latest
+
+    steps:
+      - name: Install host tools
+        run: apk add --no-cache build-base git
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Mark workspace safe
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Build
+        run: make clean check package
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: RFAuds2-${{ github.sha }}
+          path: |
+            build/librfauds2.a
+            build/rfauds2.irx
+            build/package/**
+          if-no-files-found: error

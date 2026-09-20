@@ -23,8 +23,11 @@ jobs:
       - name: Mark workspace safe
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
+      - name: Fetch PS2SDK source rules
+        run: git clone --depth 1 https://github.com/ps2dev/ps2sdk /tmp/ps2sdk-src
+
       - name: Build
-        run: make clean check package
+        run: make clean check package PS2SDKSRC=/tmp/ps2sdk-src
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

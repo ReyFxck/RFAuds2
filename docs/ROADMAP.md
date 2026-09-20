@@ -24,7 +24,8 @@
 - [x] linear converter
 - [x] saturating Q15 S16 mixer helper
 - [x] cubic converter
-- [ ] optional band-limited/sinc converter
+- [x] optional 256-phase / 8-tap Sinc8 upsampler
+- [ ] ratio-dependent anti-alias low-pass for sinc downsampling
 - [x] reusable multi-stream / Game-Music-SFX-UI bus mixer
 
 ## Integration

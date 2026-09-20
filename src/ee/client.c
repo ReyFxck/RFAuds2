@@ -12,6 +12,13 @@ static rfauds2_rpc_control g_control __attribute__((aligned(64)));
 static rfauds2_rpc_reply g_reply __attribute__((aligned(64)));
 static int g_bound;
 
+static void bind_retry_delay(void)
+{
+    volatile int i;
+    for (i = 0; i < 10000; ++i)
+        __asm__ volatile("nop");
+}
+
 static int rpc_simple(int function)
 {
     int result;
@@ -79,7 +86,7 @@ int rfauds2_bind(void)
         if (g_client.server != 0)
             break;
 
-        DelayThread(1000);
+        bind_retry_delay();
     }
 
     if (g_client.server == 0)

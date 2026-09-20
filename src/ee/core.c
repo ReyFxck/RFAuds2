@@ -3,6 +3,8 @@
 #define RFAUDS2_Q15_ONE 32768
 #define RFAUDS2_Q16_ONE 65536
 
+#include "sinc8_table.h"
+
 static u64 divide_u64_u32(u64 numerator, u32 denominator)
 {
     u64 quotient = 0;
@@ -102,8 +104,18 @@ int rfauds2_rate_converter_init(
 
     if (mode != RFAUDS2_RESAMPLE_NEAREST &&
         mode != RFAUDS2_RESAMPLE_LINEAR &&
-        mode != RFAUDS2_RESAMPLE_CUBIC)
+        mode != RFAUDS2_RESAMPLE_CUBIC &&
+        mode != RFAUDS2_RESAMPLE_SINC8)
         return -4;
+
+    /*
+     * This first Sinc8 path is an interpolation/up-sampling kernel.  Refuse
+     * down-sampling rather than pretending to provide an anti-alias low-pass
+     * that it does not yet implement.
+     */
+    if (mode == RFAUDS2_RESAMPLE_SINC8 &&
+        input_rate > output_rate)
+        return -6;
 
     converter->input_rate = input_rate;
     converter->output_rate = output_rate;
@@ -174,6 +186,9 @@ u32 rfauds2_rate_converter_process_s16(
     if (converter->mode == RFAUDS2_RESAMPLE_CUBIC) {
         if (input_frames < 4)
             return 0;
+    } else if (converter->mode == RFAUDS2_RESAMPLE_SINC8) {
+        if (input_frames < 5)
+            return 0;
     } else if (input_frames < 2) {
         return 0;
     }
@@ -187,6 +202,9 @@ u32 rfauds2_rate_converter_process_s16(
 
         if (converter->mode == RFAUDS2_RESAMPLE_CUBIC) {
             if (input_index + 3u >= input_frames)
+                break;
+        } else if (converter->mode == RFAUDS2_RESAMPLE_SINC8) {
+            if (input_index + 4u >= input_frames)
                 break;
         } else if (input_index + 1u >= input_frames) {
             break;
@@ -208,7 +226,7 @@ u32 rfauds2_rate_converter_process_s16(
 
                 sample =
                     a + (s32)(interpolated >> 16);
-            } else {
+            } else if (converter->mode == RFAUDS2_RESAMPLE_CUBIC) {
                 s32 p2 =
                     input[(input_index + 2u) * channels + channel];
                 s32 p3 =
@@ -220,6 +238,30 @@ u32 rfauds2_rate_converter_process_s16(
                     p2,
                     p3,
                     fraction);
+            } else {
+                u32 phase_index = fraction >> 24;
+                s64 sum = 0;
+                s32 tap;
+
+                for (tap = 0; tap < 8; ++tap) {
+                    s32 source_index =
+                        (s32)input_index + tap - 3;
+
+                    if (source_index < 0)
+                        source_index = 0;
+
+                    sum +=
+                        (s64)input[
+                            (u32)source_index * channels + channel] *
+                        (s64)rfauds2_sinc8_q15[phase_index][tap];
+                }
+
+                if (sum >= 0)
+                    sum = (sum + (RFAUDS2_Q15_ONE / 2)) >> 15;
+                else
+                    sum = -(((-sum) + (RFAUDS2_Q15_ONE / 2)) >> 15);
+
+                sample = saturate_s16(sum);
             }
 
             output[produced * channels + channel] =
@@ -234,14 +276,28 @@ u32 rfauds2_rate_converter_process_s16(
         u64 consumed64 = phase >> 32;
         u32 consumed;
 
-        u32 retain =
-            (converter->mode == RFAUDS2_RESAMPLE_CUBIC) ? 3u : 1u;
-        u32 max_consumed = input_frames - retain;
+        if (converter->mode == RFAUDS2_RESAMPLE_SINC8) {
+            /*
+             * Keep three frames behind floor(phase) so the next chunk has
+             * the negative side of the 8-tap window without hidden state.
+             */
+            if (consumed64 > 3u)
+                consumed = (u32)(consumed64 - 3u);
+            else
+                consumed = 0;
 
-        if (consumed64 > max_consumed)
-            consumed = max_consumed;
-        else
-            consumed = (u32)consumed64;
+            if (consumed > input_frames)
+                consumed = input_frames;
+        } else {
+            u32 retain =
+                (converter->mode == RFAUDS2_RESAMPLE_CUBIC) ? 3u : 1u;
+            u32 max_consumed = input_frames - retain;
+
+            if (consumed64 > max_consumed)
+                consumed = max_consumed;
+            else
+                consumed = (u32)consumed64;
+        }
 
         phase -= (u64)consumed << 32;
         converter->phase_q32 = phase;

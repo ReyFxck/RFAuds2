@@ -49,3 +49,10 @@ This completes a bounded asynchronous PCM transport primitive, not the whole
 audio-module roadmap or emulator migration. FAT/Slim tests, long playback,
 hardware refill timing and lifecycle stress remain necessary before main
 adoption.
+
+The 2026-10-02 follow-up also adds asynchronous stats launch/poll and a
+separate cached snapshot refreshed by completed successful replies. An
+adapter can query occupancy during EE work without a synchronous stats RPC
+on every frame. Delayed stats completion, submit/control exclusion, cached
+snapshot lifetime, queue consumption and error recovery are covered by the
+production client/handler fixture. The wire protocol is unchanged.

@@ -72,6 +72,15 @@ latency, volume, state, min/max queue depth, refill count and silent frames.
 `rfauds2_reset_stats()` starts a new diagnostic window without changing the
 queue.
 
+`rfauds2_get_stats_async()` launches a NOWAIT query in the same single RPC
+slot as PCM submission. Collect it with `rfauds2_get_stats_poll(&stats)`
+(0 pending, 1 complete, negative error) before another device call.
+`rfauds2_get_cached_stats(&stats)` reads the last completed successful
+snapshot without an RPC, including while another request is in flight.
+Its queue depth is a snapshot, not a continuously updated occupancy value.
+Completed PCM replies refresh this cache too. The cached object is separate
+from the DMA receive line, so reading it cannot cache a stale pending reply.
+
 ## Rate conversion
 
 The helper converter accepts arbitrary non-zero input/output rates, mono or

@@ -4,6 +4,7 @@
 
 - [x] private SIFRPC protocol
 - [x] nonblocking EE PCM RPC with explicit completion/prefix accounting
+- [x] asynchronous stats query and cached completed telemetry for adapters
 - [x] nonblocking IOP admission for full paused/stopped queues
 - [x] host transport regression for delayed RPC, buffer lifetime and PCM order
 - [x] explicit IOP queued-frame accounting

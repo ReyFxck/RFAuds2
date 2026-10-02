@@ -81,6 +81,12 @@ int rfauds2_flush(void);
 int rfauds2_set_volume(u32 volume);
 int rfauds2_set_latency_ms(u32 latency_ms);
 int rfauds2_get_stats(rfauds2_stats *stats);
+/* Asynchronous occupancy/telemetry query, sharing the single RPC slot.
+   Poll returns 0 pending, 1 complete, or a negative error. Cached stats
+   returns the last completed snapshot without an RPC, even while pending. */
+int rfauds2_get_stats_async(void);
+int rfauds2_get_stats_poll(rfauds2_stats *stats);
+int rfauds2_get_cached_stats(rfauds2_stats *stats);
 int rfauds2_reset_stats(void);
 
 int rfauds2_rate_converter_init(

@@ -109,7 +109,8 @@ int sceSifCallRpc(SifRpcClientData_t *client, int function, int mode,
         assert(end != 0);
         assert(((uintptr_t)send & 63u) == 0);
         assert(((uintptr_t)receive & 63u) == 0);
-        assert(function == RFAUDS2_RPC_TRY_SUBMIT);
+        assert(function == RFAUDS2_RPC_TRY_SUBMIT ||
+            function == RFAUDS2_RPC_STATS);
         pending = 1;
         pending_function = function;
         pending_send = send;
@@ -307,6 +308,43 @@ static void test_legacy_submit(void)
     assert(g_queued_frames == 0);
 }
 
+static void test_async_stats(void)
+{
+    rfauds2_stats before, after;
+    s16 source[512u * 2u];
+    u32 accepted;
+    unsigned int calls;
+    make_pcm(source, 512, 42);
+    assert(rfauds2_submit_s16_async(source, 512) == 0);
+    assert(rfauds2_get_stats_async() == RFAUDS2_ERROR_BUSY);
+    finish_rpc();
+    assert(rfauds2_submit_poll(&accepted) == 1 && accepted == 512);
+    calls = rpc_calls;
+    assert(rfauds2_get_cached_stats(&before) == 0);
+    assert(before.queued_frames == 512 && rpc_calls == calls);
+    assert(rfauds2_get_stats_async() == 0);
+    assert(rfauds2_get_stats_poll(&after) == 0);
+    assert(rfauds2_get_cached_stats(&after) == 0);
+    assert(!memcmp(&before, &after, sizeof(before)));
+    assert(rfauds2_submit_poll(&accepted) < 0);
+    assert(rfauds2_submit_s16_async(source, 1) == RFAUDS2_ERROR_BUSY);
+    assert(rfauds2_flush() == RFAUDS2_ERROR_BUSY);
+    fill_render_block();
+    finish_rpc();
+    assert(rfauds2_get_stats_poll(0) < 0);
+    assert(rfauds2_get_stats_poll(&after) == 1);
+    assert(after.queued_frames == 0);
+    assert(rfauds2_get_cached_stats(&before) == 0);
+    assert(!memcmp(&before, &after, sizeof(before)));
+    next_rpc_error = -77;
+    assert(rfauds2_get_stats_async() == -77);
+    assert(rfauds2_get_stats_async() == 0);
+    finish_rpc();
+    g_reply.result = -99;
+    assert(rfauds2_get_stats_poll(&after) == -99);
+    assert(rfauds2_flush() == 0);
+}
+
 int main(void)
 {
     assert(sizeof(g_receive) == 64);
@@ -319,6 +357,7 @@ int main(void)
     test_stream(86);
     test_wire_validation();
     test_legacy_submit();
+    test_async_stats();
     assert(space_waits == 0);
     puts("RFAuds2 async transport: 393216 PCM frames, partial/full queues, delayed RPC and controls OK");
     return 0;

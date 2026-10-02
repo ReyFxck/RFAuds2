@@ -41,6 +41,10 @@ host-test: | $(BUILD)
 		src/ee/core.c tests/audio_test.c \
 		-o $(BUILD)/rfauds2-host-test
 	$(BUILD)/rfauds2-host-test
+	cc -std=c99 -O2 -Wall -Wextra -Werror \
+		-Itests/transport_include -Itests/include -Iinclude \
+		tests/transport_test.c -o $(BUILD)/rfauds2-transport-test
+	$(BUILD)/rfauds2-transport-test
 
 check: all
 	@test -s $(BUILD)/librfauds2.a

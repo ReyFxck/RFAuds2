@@ -9,6 +9,9 @@ extern "C" {
 
 #define RFAUDS2_OUTPUT_RATE 48000u
 #define RFAUDS2_VOLUME_MAX  0x3FFFu
+#define RFAUDS2_ASYNC_MAX_FRAMES 960u
+#define RFAUDS2_ERROR_BUSY (-4)
+#define RFAUDS2_ERROR_PROTOCOL (-5)
 
 typedef enum {
     RFAUDS2_RESAMPLE_NEAREST = 0,
@@ -61,6 +64,15 @@ int rfauds2_init(const void *irx, u32 irx_size);
 int rfauds2_bind(void);
 
 int rfauds2_submit_s16(const s16 *interleaved_stereo, u32 frames);
+/* Launch one nonblocking RPC. PCM is copied before return; frames must be
+   1..RFAUDS2_ASYNC_MAX_FRAMES. Returns 0 on launch, ERROR_BUSY if a previous
+   request has not been collected, or another negative error. */
+int rfauds2_submit_s16_async(const s16 *interleaved_stereo, u32 frames);
+/* Returns 0 while RPC is pending, 1 on completion, or a negative error.
+   On completion *accepted_frames is the prefix copied into the IOP ring;
+   retain and retry the remaining tail, including a zero-acceptance block.
+   Collect the result before any other device call. Single EE caller only. */
+int rfauds2_submit_poll(u32 *accepted_frames);
 int rfauds2_start(void);
 int rfauds2_pause(void);
 int rfauds2_resume(void);

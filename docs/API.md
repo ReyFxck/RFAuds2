@@ -16,6 +16,41 @@ initializes the device.
 ## Playback
 
 `rfauds2_submit_s16()` accepts interleaved **48 kHz stereo S16** frames.
+It is the compatibility blocking API; use it only when playback can make
+space, or when the entire prebuffer fits in the configured queue.
+
+### Asynchronous PCM transport
+
+`rfauds2_submit_s16_async(samples, frames)` launches one SIF RPC with
+`SIF_RPC_M_NOWAIT`. It copies 1..960 frames to its own aligned EE staging
+buffer before returning 0. The caller may immediately reuse the source.
+It does not wait for the IOP to execute the request or consume PCM.
+
+`rfauds2_submit_poll(&accepted_frames)` returns 0 while the RPC is pending,
+1 when complete, or a negative transport/protocol error. On success,
+`accepted_frames` is the prefix admitted to the IOP ring. Keep the
+unaccepted tail and submit it later. Zero accepted frames means the queue
+was full; it does not discard or replace queued PCM. Poll from normal EE
+code between useful work; do not spin until a full queue drains.
+
+Only one request can be in flight. Collect its result before launching
+another request or calling a device control, stats, bind or blocking submit.
+Those calls return `RFAUDS2_ERROR_BUSY` while a result is outstanding, even
+if DMA has already finished. This keeps both the submit and reply buffers
+alive without an allocation, EE worker thread, or audio work in an interrupt.
+The device API has one EE owner and is not thread-safe.
+
+The new `TRY_SUBMIT` IOP command never waits for queue space. This keeps
+start/resume/flush reachable when playback is paused or stopped and the ring
+is full. EE poll collects the accepted prefix, then a control call can run.
+Both the client library and IRX must come from this version; an older IRX
+returns an error for the new opcode.
+
+This is a bounded transport primitive. An emulator adapter must preserve
+blocks larger than 960 frames, keep their unaccepted tails, and schedule
+poll/retry without changing emulated audio timing. It is not an automatic
+background producer queue. Initialization and device controls remain
+synchronous; the existing blocking submit API remains available.
 
 `rfauds2_start()`, `pause()`, `resume()` and `stop()` control the stream.
 

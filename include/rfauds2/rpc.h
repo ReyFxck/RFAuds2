@@ -17,7 +17,9 @@ enum {
     RFAUDS2_RPC_STOP = 7,
     RFAUDS2_RPC_FLUSH = 8,
     RFAUDS2_RPC_SET_LATENCY = 9,
-    RFAUDS2_RPC_RESET_STATS = 10
+    RFAUDS2_RPC_RESET_STATS = 10,
+    /* Partial, nonblocking ring admission. Existing opcodes stay unchanged. */
+    RFAUDS2_RPC_TRY_SUBMIT = 11
 };
 
 #define RFAUDS2_RPC_FLAG_STARTED 0x01u

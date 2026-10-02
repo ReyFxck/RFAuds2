@@ -250,7 +250,7 @@ static int audio_initialize(void)
     return 0;
 }
 
-static int audio_submit(const s16 *samples, u32 frames)
+static int audio_submit(const s16 *samples, u32 frames, int wait_for_space)
 {
     u32 source_frame = 0;
 
@@ -275,6 +275,10 @@ static int audio_submit(const s16 *samples, u32 frames)
         if (space == 0) {
             ++g_overruns;
             SignalSema(g_ring_mutex);
+            /* Leave the RPC thread available for resume/start/flush even
+               if the queue is full while playback is paused or stopped. */
+            if (!wait_for_space)
+                return (int)source_frame;
             WaitSema(g_space_sema);
             continue;
         }
@@ -483,6 +487,7 @@ static void *rpc_handler(int function, void *buffer, int length)
             break;
 
         case RFAUDS2_RPC_SUBMIT:
+        case RFAUDS2_RPC_TRY_SUBMIT:
         {
             rfauds2_rpc_submit *submit =
                 (rfauds2_rpc_submit *)buffer;
@@ -503,7 +508,8 @@ static void *rpc_handler(int function, void *buffer, int length)
                 break;
             }
 
-            result = audio_submit(submit->samples, submit->frames);
+            result = audio_submit(submit->samples, submit->frames,
+                function == RFAUDS2_RPC_SUBMIT);
             break;
         }
 

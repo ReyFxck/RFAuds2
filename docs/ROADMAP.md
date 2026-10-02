@@ -3,6 +3,9 @@
 ## Backend
 
 - [x] private SIFRPC protocol
+- [x] nonblocking EE PCM RPC with explicit completion/prefix accounting
+- [x] nonblocking IOP admission for full paused/stopped queues
+- [x] host transport regression for delayed RPC, buffer lifetime and PCM order
 - [x] explicit IOP queued-frame accounting
 - [x] lossless producer backpressure
 - [x] underrun-to-silence policy
@@ -32,5 +35,6 @@
 ## Integration
 
 - [ ] SNESticleRevive backend A/B against audsrv
+- [ ] adapter queue/poll/retry for SNESticle blocks larger than 960 frames
 - [ ] document emulator integration results
 - [ ] first tagged standalone release

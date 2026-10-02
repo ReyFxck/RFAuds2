@@ -9,8 +9,27 @@
 static SifRpcClientData_t g_client __attribute__((aligned(64)));
 static rfauds2_rpc_submit g_submit __attribute__((aligned(64)));
 static rfauds2_rpc_control g_control __attribute__((aligned(64)));
-static rfauds2_rpc_reply g_reply __attribute__((aligned(64)));
+/* Reserve the complete receive cache line: polling another global must not
+   bring a stale DMA reply into D-cache while the RPC is outstanding. */
+static union {
+    rfauds2_rpc_reply reply;
+    u8 cache_line[64];
+} g_receive __attribute__((aligned(64)));
+#define g_reply g_receive.reply
 static int g_bound;
+static u32 g_async_frames;
+
+typedef char rfauds2_async_frame_limit_check[
+    (RFAUDS2_ASYNC_MAX_FRAMES == RFAUDS2_RPC_MAX_FRAMES) ? 1 : -1];
+typedef char rfauds2_reply_cache_line_check[
+    (sizeof(g_receive) == 64) ? 1 : -1];
+
+static void async_reply_received(void *unused)
+{
+    /* Request the normal RPC_END path, including the reply DMA. Poll uses
+       the SDK packet completion state; no audio work runs in interrupt. */
+    (void)unused;
+}
 
 static void bind_retry_delay(void)
 {
@@ -22,6 +41,9 @@ static void bind_retry_delay(void)
 static int rpc_simple(int function)
 {
     int result;
+
+    if (g_async_frames != 0)
+        return RFAUDS2_ERROR_BUSY;
 
     memset(&g_reply, 0, sizeof(g_reply));
 
@@ -45,6 +67,9 @@ static int rpc_simple(int function)
 static int rpc_control(int function, u32 value)
 {
     int result;
+
+    if (g_async_frames != 0)
+        return RFAUDS2_ERROR_BUSY;
 
     g_control.value = value;
     memset(&g_reply, 0, sizeof(g_reply));
@@ -71,6 +96,10 @@ int rfauds2_bind(void)
     int result;
     int tries;
 
+    if (g_async_frames != 0)
+        return RFAUDS2_ERROR_BUSY;
+
+    g_bound = 0;
     sceSifInitRpc(0);
     memset(&g_client, 0, sizeof(g_client));
 
@@ -108,6 +137,9 @@ int rfauds2_init(const void *irx, u32 irx_size)
     int module_id;
     int module_result = 1;
 
+    if (g_async_frames != 0)
+        return RFAUDS2_ERROR_BUSY;
+
     if (irx == 0 || irx_size == 0)
         return -1;
 
@@ -133,6 +165,8 @@ int rfauds2_submit_s16(const s16 *samples, u32 frames)
 
     if (!g_bound || samples == 0)
         return -1;
+    if (g_async_frames != 0)
+        return RFAUDS2_ERROR_BUSY;
 
     while (offset < frames) {
         u32 count = frames - offset;
@@ -174,6 +208,57 @@ int rfauds2_submit_s16(const s16 *samples, u32 frames)
     }
 
     return (int)frames;
+}
+
+int rfauds2_submit_s16_async(const s16 *samples, u32 frames)
+{
+    int result;
+    u32 bytes;
+
+    if (!g_bound || samples == 0 || frames == 0 ||
+        frames > RFAUDS2_ASYNC_MAX_FRAMES)
+        return -1;
+    if (g_async_frames != 0)
+        return RFAUDS2_ERROR_BUSY;
+
+    /* Own both DMA buffers until poll collects the reply. The producer may
+       immediately reuse its source block, including a scratchpad buffer. */
+    g_submit.frames = frames;
+    memcpy(g_submit.samples, samples, frames * 2u * sizeof(s16));
+    memset(&g_reply, 0, sizeof(g_reply));
+    g_async_frames = frames;
+    bytes = sizeof(u32) + frames * 2u * sizeof(s16);
+
+    result = sceSifCallRpc(&g_client, RFAUDS2_RPC_TRY_SUBMIT,
+        SIF_RPC_M_NOWAIT, &g_submit, bytes, &g_reply, sizeof(g_reply),
+        async_reply_received, 0);
+    if (result < 0) {
+        g_async_frames = 0;
+        return result;
+    }
+    return 0;
+}
+
+int rfauds2_submit_poll(u32 *accepted_frames)
+{
+    int result;
+    u32 frames;
+
+    if (accepted_frames == 0 || g_async_frames == 0)
+        return -1;
+    if (sceSifCheckStatRpc(&g_client))
+        return 0;
+
+    frames = g_async_frames;
+    result = g_reply.result;
+    g_async_frames = 0;
+    if (result < 0)
+        return result;
+    if ((u32)result > frames)
+        return RFAUDS2_ERROR_PROTOCOL;
+
+    *accepted_frames = (u32)result;
+    return 1;
 }
 
 int rfauds2_start(void)

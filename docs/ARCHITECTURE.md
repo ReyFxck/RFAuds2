@@ -43,6 +43,18 @@ When the producer reaches the configured queue limit it waits for space. PCM is
 not discarded. When the consumer has fewer than 512 frames available, the
 remainder of that hardware block is explicitly zero-filled.
 
+The asynchronous producer uses `TRY_SUBMIT` instead: the IOP admits the
+available prefix and immediately returns its length. The EE retains the tail
+until a later request can admit it. A full paused/stopped ring does not hold
+the sole RPC server thread in a space wait. The legacy blocking command is
+unchanged.
+
+The EE asynchronous client owns one 960-frame staging block and its reply
+until poll collects completion. While outstanding, another device RPC returns
+busy. SIF uses its normal cache-maintenance and RPC_END path; the completion
+callback does no audio work. The producer can overlap the RPC with another
+frame's computation and poll at a later safe point.
+
 ## DMA
 
 RFAuds2 owns SPU2 block-DMA setup and the DMA interrupt. The 4096-byte DMA

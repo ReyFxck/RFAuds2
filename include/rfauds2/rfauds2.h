@@ -9,6 +9,9 @@ extern "C" {
 
 #define RFAUDS2_OUTPUT_RATE 48000u
 #define RFAUDS2_VOLUME_MAX  0x3FFFu
+#define RFAUDS2_ASYNC_MAX_FRAMES 960u
+#define RFAUDS2_ERROR_BUSY (-4)
+#define RFAUDS2_ERROR_PROTOCOL (-5)
 
 typedef enum {
     RFAUDS2_RESAMPLE_NEAREST = 0,
@@ -61,6 +64,15 @@ int rfauds2_init(const void *irx, u32 irx_size);
 int rfauds2_bind(void);
 
 int rfauds2_submit_s16(const s16 *interleaved_stereo, u32 frames);
+/* Launch one nonblocking RPC. PCM is copied before return; frames must be
+   1..RFAUDS2_ASYNC_MAX_FRAMES. Returns 0 on launch, ERROR_BUSY if a previous
+   request has not been collected, or another negative error. */
+int rfauds2_submit_s16_async(const s16 *interleaved_stereo, u32 frames);
+/* Returns 0 while RPC is pending, 1 on completion, or a negative error.
+   On completion *accepted_frames is the prefix copied into the IOP ring;
+   retain and retry the remaining tail, including a zero-acceptance block.
+   Collect the result before any other device call. Single EE caller only. */
+int rfauds2_submit_poll(u32 *accepted_frames);
 int rfauds2_start(void);
 int rfauds2_pause(void);
 int rfauds2_resume(void);
@@ -69,6 +81,12 @@ int rfauds2_flush(void);
 int rfauds2_set_volume(u32 volume);
 int rfauds2_set_latency_ms(u32 latency_ms);
 int rfauds2_get_stats(rfauds2_stats *stats);
+/* Asynchronous occupancy/telemetry query, sharing the single RPC slot.
+   Poll returns 0 pending, 1 complete, or a negative error. Cached stats
+   returns the last completed snapshot without an RPC, even while pending. */
+int rfauds2_get_stats_async(void);
+int rfauds2_get_stats_poll(rfauds2_stats *stats);
+int rfauds2_get_cached_stats(rfauds2_stats *stats);
 int rfauds2_reset_stats(void);
 
 int rfauds2_rate_converter_init(

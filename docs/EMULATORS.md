@@ -72,8 +72,14 @@ the diagnostic window unambiguous.
 
 ## SNESticleRevive A/B
 
-The experimental SNESticleRevive integration lives on
-`test/audio-mesence-parity-v1`.
+An earlier experimental integration was described on
+`test/audio-mesence-parity-v1`. That branch was not available from the public
+repository during the 2026-10-02 audit; it is not evidence of an integration
+in current main.
+
+The `fix/async-pcm-transport` candidate adds the transport primitive only.
+Before changing the SNESticle backend, its adapter must retain blocks and
+unaccepted tails, poll during normal EE work, and drain safely on transitions.
 
 The intended comparison keeps these components identical:
 

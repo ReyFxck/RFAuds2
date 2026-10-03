@@ -18,6 +18,7 @@ so the backend can evolve and be reused independently.
 - fixed 48 kHz / stereo / signed 16-bit PCM at the SPU2 boundary;
 - explicit ring-buffer accounting instead of ambiguous read/write state;
 - backpressure instead of silently dropping the tail of a block;
+- asynchronous PCM RPC with an explicit accepted-prefix result;
 - underrun produces silence, never stale PCM;
 - real flush, pause, resume and stop operations;
 - configurable queue latency;
@@ -35,7 +36,9 @@ ring buffering, pause/resume, stop, flush, volume and latency controls are
 implemented.
 
 Cross-build CI and deterministic host regressions cover the resampler and bus
-mixer. Real FAT/Slim PS2 validation and long-duration emulator stress testing
+mixer, plus EE/IOP transport contracts with delayed RPC completion. These
+transport tests mock scheduling/DMA, not physical SPU2 behavior.
+Real FAT/Slim PS2 validation and long-duration emulator stress testing
 are still required before calling the backend production-ready.
 
 ## Architecture
@@ -125,6 +128,10 @@ rfauds2_start();
 
 rfauds2_get_stats(&stats);
 ```
+
+For overlapping transport with emulator work, use
+`rfauds2_submit_s16_async()` and later `rfauds2_submit_poll()`. Retain and
+retry any unaccepted tail; see the [API contract](docs/API.md).
 
 Applications that generate another sample rate can use the included fixed-point
 rate converter before submitting to the device backend.

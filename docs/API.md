@@ -6,121 +6,156 @@ Include:
 #include <rfauds2/rfauds2.h>
 ```
 
-## Initialization
+RFAuds2's device boundary is always **48 kHz, stereo, signed 16-bit PCM**.
+The helper converter can be used before submission when a producer runs at a
+different native rate.
 
-`rfauds2_init(irx, size)` loads an embedded `rfauds2.irx`, binds RPC and
-initializes the device.
+## Initialization and protocol matching
 
-`rfauds2_bind()` binds to an IRX that the application already loaded.
+`rfauds2_init(irx, size)` loads an embedded `rfauds2.irx`, binds the RPC
+server, checks the protocol version, then initializes the hardware backend.
 
-## Playback
+`rfauds2_bind()` binds to an already-loaded IRX and performs the same protocol
+check/initialization.
 
-`rfauds2_submit_s16()` accepts interleaved **48 kHz stereo S16** frames.
-It is the compatibility blocking API; use it only when playback can make
-space, or when the entire prebuffer fits in the configured queue.
+The EE client and IRX must come from the same build. A mismatched/older IRX is
+rejected with `RFAUDS2_ERROR_PROTOCOL` before SPU2 initialization.
 
-### Asynchronous PCM transport
+## Shutdown and ownership
 
-`rfauds2_submit_s16_async(samples, frames)` launches one SIF RPC with
-`SIF_RPC_M_NOWAIT`. It copies 1..960 frames to its own aligned EE staging
-buffer before returning 0. The caller may immediately reuse the source.
-It does not wait for the IOP to execute the request or consume PCM.
+`rfauds2_shutdown()` stops playback and releases RFAuds2's playback thread,
+semaphores and SPU2 DMA interrupt handler. The RPC server remains resident, so
+`rfauds2_bind()` can initialize it again later.
 
-`rfauds2_submit_poll(&accepted_frames)` returns 0 while the RPC is pending,
-1 when complete, or a negative transport/protocol error. On success,
-`accepted_frames` is the prefix admitted to the IOP ring. Keep the
-unaccepted tail and submit it later. Zero accepted frames means the queue
-was full; it does not discard or replace queued PCM. Poll from normal EE
-code between useful work; do not spin until a full queue drains.
+RFAuds2 is a direct backend and expects exclusive SPU2/DMA ownership while it
+is initialized. `shutdown()` releases RFAuds2's ownership, but cannot restore
+a previous audio stack's register state or interrupt handler. Reinitialize the
+other stack after shutting RFAuds2 down.
 
-Only one request can be in flight. Collect its result before launching
-another request or calling a device control, stats, bind or blocking submit.
-Those calls return `RFAUDS2_ERROR_BUSY` while a result is outstanding, even
-if DMA has already finished. This keeps both the submit and reply buffers
-alive without an allocation, EE worker thread, or audio work in an interrupt.
-The device API has one EE owner and is not thread-safe.
+## Blocking submission
 
-The new `TRY_SUBMIT` IOP command never waits for queue space. This keeps
-start/resume/flush reachable when playback is paused or stopped and the ring
-is full. EE poll collects the accepted prefix, then a control call can run.
-Both the client library and IRX must come from this version; an older IRX
-returns an error for the new opcode.
+`rfauds2_submit_s16(samples, frames)` accepts interleaved 48 kHz stereo S16.
+It is the compatibility blocking API. Large submissions are split into RPC
+blocks internally. If the configured queue is full, the IOP side waits for
+space, so do not use this path while playback is stopped/paused with a full
+queue.
 
-This is a bounded transport primitive. An emulator adapter must preserve
-blocks larger than 960 frames, keep their unaccepted tails, and schedule
-poll/retry without changing emulated audio timing. It is not an automatic
-background producer queue. Initialization and device controls remain
-synchronous; the existing blocking submit API remains available.
+## Asynchronous PCM transport
 
-`rfauds2_start()`, `pause()`, `resume()` and `stop()` control the stream.
+`rfauds2_submit_s16_async(samples, frames)` launches one NOWAIT SIF RPC. It
+accepts 1..`RFAUDS2_ASYNC_MAX_FRAMES` (960) frames and copies them into
+library-owned aligned storage before returning.
 
-`rfauds2_flush()` discards queued ring-buffer PCM. If an application needs
-the currently active DMA block discarded immediately, stop, flush and start.
+`rfauds2_submit_poll(&accepted_frames)` returns:
 
-## Queue and volume
+- `0` while pending;
+- `1` when complete;
+- a negative error on failure.
 
-`rfauds2_set_latency_ms()` rounds the requested queue size up to 512-frame
-hardware blocks and clamps it to the physical 4096-frame ring.
+On completion, `accepted_frames` is the prefix admitted to the IOP ring. The
+caller must preserve and retry the unaccepted tail. A zero acceptance means the
+queue was full; PCM was not silently dropped.
 
-`rfauds2_set_volume()` uses native 0..0x3fff SPU2 units.
+Only one device RPC may be outstanding. Device controls, blocking submission,
+bind/shutdown and synchronous stats return `RFAUDS2_ERROR_BUSY` until the
+pending result is collected.
+
+## Playback controls
+
+`rfauds2_start()` starts DMA after priming both real 512-frame halves from the
+queue. If hardware start fails, the priming step is rolled back so queued PCM
+is not consumed accidentally.
+
+`rfauds2_pause()` mutes/pauses consumption while retaining queued PCM.
+
+`rfauds2_resume()` resumes normal consumption.
+
+`rfauds2_stop()` stops DMA but does not discard the IOP ring.
+
+`rfauds2_flush()` clears queued ring PCM. To discard the block currently in
+DMA as well, stop first, then flush, then restart/prebuffer as needed.
+
+## Queue latency
+
+`rfauds2_set_latency_ms(ms)` converts the requested time to 48 kHz frames,
+rounds to the nearest 512-frame block and clamps to the 4096-frame ring.
+Examples: 43 ms -> 2048 frames (~42.67 ms), 64 ms -> 3072 frames, 86 ms ->
+4096 frames.
+
+Shrinking below current queue occupancy returns `RFAUDS2_ERROR_BUSY`. Drain or
+flush first.
+
+## Volume
+
+`rfauds2_set_volume()` accepts native SPU2 values from 0 through
+`RFAUDS2_VOLUME_MAX` (`0x3fff`).
 
 ## Diagnostics
 
-`rfauds2_get_stats()` reports queue depth, underruns, producer backpressure,
-latency, volume, state, min/max queue depth, refill count and silent frames.
+`rfauds2_get_stats()` returns:
 
-`rfauds2_reset_stats()` starts a new diagnostic window without changing the
-queue.
+- queue depth/capacity;
+- underruns and overruns;
+- effective latency and volume;
+- started/paused state;
+- min/max observed queue depth;
+- render refill count;
+- zero-filled frames;
+- `missed_refills`.
 
-`rfauds2_get_stats_async()` launches a NOWAIT query in the same single RPC
-slot as PCM submission. Collect it with `rfauds2_get_stats_poll(&stats)`
-(0 pending, 1 complete, negative error) before another device call.
-`rfauds2_get_cached_stats(&stats)` reads the last completed successful
-snapshot without an RPC, including while another request is in flight.
-Its queue depth is a snapshot, not a continuously updated occupancy value.
-Completed PCM replies refresh this cache too. The cached object is separate
-from the DMA receive line, so reading it cannot cache a stale pending reply.
+A ring underrun means the render stage had fewer than 512 frames and zero-filled
+the missing tail. A missed refill means the IOP refill thread did not publish a
+real DMA half before the hardware deadline; the DMA interrupt used a dedicated
+silence block instead of replaying stale PCM. Missed refills also count toward
+`underruns` and `silent_frames`.
+
+`rfauds2_reset_stats()` resets the diagnostic window without changing queued
+PCM.
+
+`rfauds2_get_stats_async()` launches a NOWAIT stats query in the same single
+RPC slot used by async PCM. Collect with `rfauds2_get_stats_poll()`.
+
+`rfauds2_get_cached_stats()` returns the last successful completed snapshot
+without issuing another RPC. It is a snapshot, not live occupancy.
 
 ## Rate conversion
 
-The helper converter accepts arbitrary non-zero input/output rates, mono or
-stereo S16 and nearest, linear, four-point cubic Lagrange or optional
-8-tap Lanczos-windowed sinc interpolation.
-It uses a Q32 phase accumulator.
+`rfauds2_rate_converter_init()` accepts non-zero source/output rates, mono or
+stereo S16 and one of:
 
-The caller preserves the unconsumed source tail reported by
-`input_frames_consumed` and prepends it to the next chunk. Nearest/linear
-retain one source frame; cubic retains three so its four-point window stays
-continuous across chunk boundaries. Exact-rate streams use a copy path.
+- `RFAUDS2_RESAMPLE_NEAREST`
+- `RFAUDS2_RESAMPLE_LINEAR`
+- `RFAUDS2_RESAMPLE_CUBIC`
+- `RFAUDS2_RESAMPLE_SINC8`
 
+The converter uses a Q32 phase accumulator. The caller must preserve the
+unconsumed input tail reported through `input_frames_consumed` and prepend it
+to the next source chunk.
 
-## Bus mixer
+Nearest/linear retain one source frame; cubic retains three; Sinc8 retains its
+history window through the same tail-preservation contract.
 
-`rfauds2_bus_mixer` provides four named buses:
+Sinc8 is currently for upsampling only. It rejects downsampling with
+`RFAUDS2_RATE_ERROR_SINC_DOWNSAMPLE` because correct sinc downsampling also
+needs a ratio-dependent anti-alias low-pass.
 
-- Game
-- Music
-- SFX
-- UI
+## Mixing
 
-Each bus has an independent Q15 gain and mute flag. Initialize the state with
-`rfauds2_bus_mixer_init()`, clear an output block with
-`rfauds2_bus_mixer_clear_s16()`, then mix any number of sources into the
-appropriate bus with `rfauds2_bus_mixer_mix_s16()`.
+`rfauds2_mix_s16()` mixes one S16 source into a destination with Q15 gain and
+saturates to S16.
 
-The helper is intentionally allocation-free and does not own producer
-lifetimes; an emulator or engine can keep one rate converter per producer and
-mix the resulting PCM into these buses.
+`rfauds2_bus_mixer` provides Game, Music, SFX and UI buses. Initialize with
+`rfauds2_bus_mixer_init()`, clear a destination with
+`rfauds2_bus_mixer_clear_s16()`, then mix sources with
+`rfauds2_bus_mixer_mix_s16()`.
 
+## Public error constants
 
-### Sinc8 scope
+Common stable errors are:
 
-`RFAUDS2_RESAMPLE_SINC8` is a 256-phase, 8-tap fixed-point
-Lanczos-windowed sinc kernel intended for **upsampling**, including common
-emulator paths such as 32 kHz -> 48 kHz and 44.1 kHz -> 48 kHz. The phase
-rows are normalized to unity gain.
+- `RFAUDS2_ERROR_INVALID_ARGUMENT`
+- `RFAUDS2_ERROR_BUSY`
+- `RFAUDS2_ERROR_PROTOCOL`
 
-Sinc8 deliberately rejects downsampling for now because doing that correctly
-also requires a ratio-dependent anti-alias low-pass. Use linear/cubic for
-current downsampling needs rather than silently accepting an aliased sinc
-configuration.
+Some lower-level SIF/module-load failures can still surface as other negative
+values. Treat any negative return as an error.

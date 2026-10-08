@@ -1,0 +1,8 @@
+/build/
+/src/iop/obj/
+/src/iop/irx/
+
+*.o
+*.d
+*.elf
+*.irx

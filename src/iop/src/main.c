@@ -8,7 +8,7 @@
 #define RFAUDS2_RPC_INPUT_BYTES \
     ((sizeof(rfauds2_rpc_submit) + 63u) & ~63u)
 
-IRX_ID("rfauds2", 1, 0);
+IRX_ID("rfauds2", 1, 1);
 
 static SifRpcDataQueue_t g_rpc_queue;
 static SifRpcServerData_t g_rpc_server;
@@ -28,6 +28,7 @@ static u32 g_min_queued_frames;
 static u32 g_max_queued_frames;
 static u32 g_refill_count;
 static u32 g_silent_frames;
+static u32 g_missed_refills;
 
 static unsigned char g_spu_buffer[4096] __attribute__((aligned(64)));
 static s16 g_render_left[RFAUDS2_BLOCK_FRAMES]
@@ -42,7 +43,7 @@ static int g_rpc_ready_sema = -1;
 static int g_play_thread = -1;
 
 static int g_initialized;
-static int g_started;
+static volatile int g_started;
 static int g_paused;
 static u32 g_volume = RFAUDS2_MAX_VOLUME;
 static u32 g_queue_limit_frames = RFAUDS2_RING_FRAMES;
@@ -68,14 +69,36 @@ static int create_semaphore(int initial, int max)
     return CreateSema(&sema);
 }
 
+static void delete_semaphore_if_valid(int *id)
+{
+    if (*id >= 0) {
+        DeleteSema(*id);
+        *id = -1;
+    }
+}
+
+static void sync_missed_refills(void)
+{
+    u32 missed = rfauds2_spu2_take_missed_refills();
+
+    if (missed != 0) {
+        g_missed_refills += missed;
+        g_underruns += missed;
+        g_silent_frames += missed * RFAUDS2_BLOCK_FRAMES;
+    }
+}
+
 static void stats_reset_locked(void)
 {
+    /* Discard any hardware events that belong to the previous window. */
+    (void)rfauds2_spu2_take_missed_refills();
     g_underruns = 0;
     g_overruns = 0;
     g_min_queued_frames = g_queued_frames;
     g_max_queued_frames = g_queued_frames;
     g_refill_count = 0;
     g_silent_frames = 0;
+    g_missed_refills = 0;
 }
 
 static void stats_note_queue_locked(void)
@@ -181,23 +204,46 @@ static void play_thread(void *arg)
     (void)arg;
 
     for (;;) {
-        u32 active_block;
-        u32 idle_block;
-        int interrupt_state;
+        int block;
 
         WaitSema(g_transfer_sema);
-        fill_render_block();
 
-        CpuSuspendIntr(&interrupt_state);
+        /* stop() clears the low-level pending mask before dropping started.
+           Ignore a semaphore token that was already queued before the stop. */
+        if (!g_started)
+            continue;
 
-        active_block = rfauds2_spu2_active_block();
-        idle_block = 1u - active_block;
+        while ((block = rfauds2_spu2_take_refill_block()) >= 0) {
+            if (!g_started)
+                break;
 
-        copy_render_to_spu(g_spu_buffer + (idle_block << 11));
+            fill_render_block();
+            copy_render_to_spu(g_spu_buffer + ((u32)block << 11));
 
-        CpuResumeIntr(interrupt_state);
-        FlushDcache();
+            /* The block becomes visible to the DMA scheduler only after the
+               cache writeback. This closes the old resume-intr/FlushDcache
+               race where DMA could observe stale data. */
+            FlushDcache();
+            rfauds2_spu2_mark_block_ready((u32)block);
+        }
     }
+}
+
+static void audio_cleanup_partial(void)
+{
+    if (g_play_thread >= 0) {
+        TerminateThread(g_play_thread);
+        DeleteThread(g_play_thread);
+        g_play_thread = -1;
+    }
+
+    (void)rfauds2_spu2_shutdown();
+    delete_semaphore_if_valid(&g_transfer_sema);
+    delete_semaphore_if_valid(&g_space_sema);
+    delete_semaphore_if_valid(&g_ring_mutex);
+    g_initialized = 0;
+    g_started = 0;
+    g_paused = 0;
 }
 
 static int audio_initialize(void)
@@ -209,17 +255,22 @@ static int audio_initialize(void)
         return 0;
 
     g_ring_mutex = create_semaphore(1, 1);
-    g_space_sema = create_semaphore(0, 1);
-    g_transfer_sema = create_semaphore(0, 1);
+    if (g_ring_mutex < 0)
+        goto fail;
 
-    if (g_ring_mutex < 0 ||
-        g_space_sema < 0 ||
-        g_transfer_sema < 0)
-        return -1;
+    g_space_sema = create_semaphore(0, 1);
+    if (g_space_sema < 0)
+        goto fail;
+
+    g_transfer_sema = create_semaphore(0, 1);
+    if (g_transfer_sema < 0)
+        goto fail;
 
     spu2_result = rfauds2_spu2_init(transfer_complete, 0);
-    if (spu2_result < 0)
+    if (spu2_result < 0) {
+        audio_cleanup_partial();
         return -2;
+    }
 
     clear_bytes(g_ring, sizeof(g_ring));
     clear_bytes(g_spu_buffer, sizeof(g_spu_buffer));
@@ -229,9 +280,9 @@ static int audio_initialize(void)
     g_read_frame = 0;
     g_write_frame = 0;
     g_queued_frames = 0;
+    g_queue_limit_frames = RFAUDS2_RING_FRAMES;
+    g_volume = RFAUDS2_MAX_VOLUME;
     stats_reset_locked();
-
-    update_volume();
 
     thread.attr = TH_C;
     thread.option = 0;
@@ -240,14 +291,25 @@ static int audio_initialize(void)
     thread.priority = 38;
 
     g_play_thread = CreateThread(&thread);
-    if (g_play_thread < 0)
+    if (g_play_thread < 0) {
+        audio_cleanup_partial();
         return -3;
+    }
 
-    if (StartThread(g_play_thread, 0) < 0)
+    if (StartThread(g_play_thread, 0) < 0) {
+        audio_cleanup_partial();
         return -4;
+    }
 
     g_initialized = 1;
+    g_started = 0;
+    g_paused = 0;
+    update_volume();
     return 0;
+
+fail:
+    audio_cleanup_partial();
+    return -1;
 }
 
 static int audio_submit(const s16 *samples, u32 frames, int wait_for_space)
@@ -275,8 +337,6 @@ static int audio_submit(const s16 *samples, u32 frames, int wait_for_space)
         if (space == 0) {
             ++g_overruns;
             SignalSema(g_ring_mutex);
-            /* Leave the RPC thread available for resume/start/flush even
-               if the queue is full while playback is paused or stopped. */
             if (!wait_for_space)
                 return (int)source_frame;
             WaitSema(g_space_sema);
@@ -311,6 +371,14 @@ static int audio_submit(const s16 *samples, u32 frames, int wait_for_space)
 static int audio_start(void)
 {
     int transfer_result;
+    u32 saved_read;
+    u32 saved_write;
+    u32 saved_queued;
+    u32 saved_underruns;
+    u32 saved_min;
+    u32 saved_max;
+    u32 saved_refills;
+    u32 saved_silent;
 
     if (!g_initialized)
         return -1;
@@ -318,36 +386,51 @@ static int audio_start(void)
     if (g_started)
         return 0;
 
+    WaitSema(g_ring_mutex);
+    saved_read = g_read_frame;
+    saved_write = g_write_frame;
+    saved_queued = g_queued_frames;
+    saved_underruns = g_underruns;
+    saved_min = g_min_queued_frames;
+    saved_max = g_max_queued_frames;
+    saved_refills = g_refill_count;
+    saved_silent = g_silent_frames;
+    SignalSema(g_ring_mutex);
+
     clear_bytes(g_spu_buffer, sizeof(g_spu_buffer));
     clear_bytes(g_render_left, sizeof(g_render_left));
     clear_bytes(g_render_right, sizeof(g_render_right));
 
-    /*
-     * Prime both 512-frame DMA halves before enabling the SPU2 loop.
-     * Starting with two zeroed halves forced ~21 ms of silence before the
-     * first queued PCM could reach the hardware and made every stop/flush/
-     * restart transition audibly discontinuous.
-     */
+    /* Prime both real DMA halves before enabling the loop. */
     fill_render_block();
     copy_render_to_spu(g_spu_buffer + 0);
     fill_render_block();
     copy_render_to_spu(g_spu_buffer + (1u << 11));
     FlushDcache();
 
-    g_started = 1;
-    g_paused = 0;
-    update_volume();
-
     transfer_result = rfauds2_spu2_start_loop(
         g_spu_buffer,
         sizeof(g_spu_buffer));
 
     if (transfer_result < 0) {
-        g_started = 0;
-        update_volume();
+        /* Priming is transactional: a failed hardware start must not consume
+           up to 1024 producer frames or alter its diagnostic window. */
+        WaitSema(g_ring_mutex);
+        g_read_frame = saved_read;
+        g_write_frame = saved_write;
+        g_queued_frames = saved_queued;
+        g_underruns = saved_underruns;
+        g_min_queued_frames = saved_min;
+        g_max_queued_frames = saved_max;
+        g_refill_count = saved_refills;
+        g_silent_frames = saved_silent;
+        SignalSema(g_ring_mutex);
         return -2;
     }
 
+    g_started = 1;
+    g_paused = 0;
+    update_volume();
     return 0;
 }
 
@@ -390,12 +473,16 @@ static int audio_stop(void)
 
     g_started = 0;
     g_paused = 0;
+    sync_missed_refills();
     update_volume();
     return 0;
 }
 
 static int audio_flush(void)
 {
+    if (!g_initialized)
+        return -1;
+
     WaitSema(g_ring_mutex);
 
     g_read_frame = 0;
@@ -413,9 +500,44 @@ static int audio_flush(void)
     return 0;
 }
 
+static int audio_shutdown(void)
+{
+    int result = 0;
+
+    if (!g_initialized)
+        return 0;
+
+    if (g_started) {
+        result = rfauds2_spu2_stop();
+        if (result < 0)
+            return -1;
+    }
+
+    g_started = 0;
+    g_paused = 0;
+    sync_missed_refills();
+
+    if (g_play_thread >= 0) {
+        TerminateThread(g_play_thread);
+        DeleteThread(g_play_thread);
+        g_play_thread = -1;
+    }
+
+    result = rfauds2_spu2_shutdown();
+    if (result < 0)
+        return -2;
+
+    delete_semaphore_if_valid(&g_transfer_sema);
+    delete_semaphore_if_valid(&g_space_sema);
+    delete_semaphore_if_valid(&g_ring_mutex);
+
+    g_initialized = 0;
+    return 0;
+}
+
 static int audio_set_volume(u32 volume)
 {
-    if (volume > RFAUDS2_MAX_VOLUME)
+    if (!g_initialized || volume > RFAUDS2_MAX_VOLUME)
         return -1;
 
     g_volume = volume;
@@ -425,14 +547,15 @@ static int audio_set_volume(u32 volume)
 
 static int audio_set_latency_ms(u32 latency_ms)
 {
+    u32 requested_frames;
     u32 frames;
 
-    if (latency_ms == 0 || latency_ms > 1000u)
+    if (!g_initialized || latency_ms == 0 || latency_ms > 1000u)
         return -1;
 
-    frames = latency_ms * 48u;
+    requested_frames = latency_ms * 48u;
     frames =
-        ((frames + RFAUDS2_BLOCK_FRAMES - 1u) /
+        ((requested_frames + RFAUDS2_BLOCK_FRAMES / 2u) /
          RFAUDS2_BLOCK_FRAMES) *
         RFAUDS2_BLOCK_FRAMES;
 
@@ -441,7 +564,13 @@ static int audio_set_latency_ms(u32 latency_ms)
     if (frames > RFAUDS2_RING_FRAMES)
         frames = RFAUDS2_RING_FRAMES;
 
+    WaitSema(g_ring_mutex);
+    if (frames < g_queued_frames) {
+        SignalSema(g_ring_mutex);
+        return RFAUDS2_ERROR_BUSY;
+    }
     g_queue_limit_frames = frames;
+    SignalSema(g_ring_mutex);
     SignalSema(g_space_sema);
 
     return 0;
@@ -449,6 +578,9 @@ static int audio_set_latency_ms(u32 latency_ms)
 
 static int audio_reset_stats(void)
 {
+    if (!g_initialized)
+        return -1;
+
     WaitSema(g_ring_mutex);
     stats_reset_locked();
     SignalSema(g_ring_mutex);
@@ -457,19 +589,22 @@ static int audio_reset_stats(void)
 
 static void fill_reply(int result)
 {
+    sync_missed_refills();
+
     g_rpc_reply.result = result;
     g_rpc_reply.queued_frames = g_queued_frames;
     g_rpc_reply.capacity_frames = g_queue_limit_frames;
     g_rpc_reply.underruns = g_underruns;
     g_rpc_reply.overruns = g_overruns;
     g_rpc_reply.latency_ms =
-        (g_queue_limit_frames * 1000u + 47999u) / 48000u;
+        (g_queue_limit_frames * 1000u + 24000u) / 48000u;
     g_rpc_reply.volume = g_volume;
     g_rpc_reply.flags = 0;
     g_rpc_reply.min_queued_frames = g_min_queued_frames;
     g_rpc_reply.max_queued_frames = g_max_queued_frames;
     g_rpc_reply.refill_count = g_refill_count;
     g_rpc_reply.silent_frames = g_silent_frames;
+    g_rpc_reply.missed_refills = g_missed_refills;
 
     if (g_started)
         g_rpc_reply.flags |= RFAUDS2_RPC_FLAG_STARTED;
@@ -482,6 +617,10 @@ static void *rpc_handler(int function, void *buffer, int length)
     int result = 0;
 
     switch (function) {
+        case RFAUDS2_RPC_PROTOCOL:
+            result = (int)RFAUDS2_RPC_PROTOCOL_VERSION;
+            break;
+
         case RFAUDS2_RPC_INIT:
             result = audio_initialize();
             break;
@@ -508,7 +647,9 @@ static void *rpc_handler(int function, void *buffer, int length)
                 break;
             }
 
-            result = audio_submit(submit->samples, submit->frames,
+            result = audio_submit(
+                submit->samples,
+                submit->frames,
                 function == RFAUDS2_RPC_SUBMIT);
             break;
         }
@@ -518,7 +659,7 @@ static void *rpc_handler(int function, void *buffer, int length)
             break;
 
         case RFAUDS2_RPC_STATS:
-            result = 0;
+            result = g_initialized ? 0 : -1;
             break;
 
         case RFAUDS2_RPC_SET_VOLUME:
@@ -563,6 +704,10 @@ static void *rpc_handler(int function, void *buffer, int length)
 
         case RFAUDS2_RPC_RESET_STATS:
             result = audio_reset_stats();
+            break;
+
+        case RFAUDS2_RPC_SHUTDOWN:
+            result = audio_shutdown();
             break;
 
         default:
@@ -618,12 +763,21 @@ int _start(int argc, char *argv[])
         return MODULE_NO_RESIDENT_END;
 
     thread_id = CreateThread(&thread);
-    if (thread_id < 0)
+    if (thread_id < 0) {
+        DeleteSema(g_rpc_ready_sema);
+        g_rpc_ready_sema = -1;
         return MODULE_NO_RESIDENT_END;
+    }
 
-    if (StartThread(thread_id, 0) < 0)
+    if (StartThread(thread_id, 0) < 0) {
+        DeleteThread(thread_id);
+        DeleteSema(g_rpc_ready_sema);
+        g_rpc_ready_sema = -1;
         return MODULE_NO_RESIDENT_END;
+    }
 
     WaitSema(g_rpc_ready_sema);
+    DeleteSema(g_rpc_ready_sema);
+    g_rpc_ready_sema = -1;
     return MODULE_RESIDENT_END;
 }

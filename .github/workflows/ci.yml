@@ -8,29 +8,36 @@ on:
 permissions:
   contents: read
 
+env:
+  PS2SDK_REF: 4996c6f63d42d2cf5d68dfa2f7bb74b9e3c653f5
+
 jobs:
   build:
     runs-on: ubuntu-latest
-    container: ps2dev/ps2dev:latest
+    container: ps2dev/ps2dev@sha256:b1869a480cf530f34784e71c6b0b80013cb3c20c01696270f9ab680a15e6fa26
 
     steps:
       - name: Install host tools
         run: apk add --no-cache build-base git
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: Mark workspace safe
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
-      - name: Fetch PS2SDK source rules
-        run: git clone --depth 1 https://github.com/ps2dev/ps2sdk /tmp/ps2sdk-src
+      - name: Fetch pinned PS2SDK source rules
+        run: |
+          git init /tmp/ps2sdk-src
+          git -C /tmp/ps2sdk-src remote add origin https://github.com/ps2dev/ps2sdk
+          git -C /tmp/ps2sdk-src fetch --depth 1 origin "$PS2SDK_REF"
+          git -C /tmp/ps2sdk-src checkout --detach FETCH_HEAD
 
-      - name: Build
+      - name: Build and test
         run: make clean host-test check package PS2SDKSRC=/tmp/ps2sdk-src
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: RFAuds2-${{ github.sha }}
           path: |

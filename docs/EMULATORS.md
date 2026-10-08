@@ -1,8 +1,7 @@
 # Emulator integration
 
-RFAuds2 is designed for emulators and other real-time producers that generate
-continuous PCM with timing owned by the emulated system rather than by the
-PlayStation 2 output device.
+RFAuds2 is intended for emulators and other real-time producers whose audio
+clock belongs to the emulated system, not to the PS2 output device.
 
 ## Recommended pipeline
 
@@ -11,80 +10,82 @@ emulated audio core
         |
         | native-rate PCM
         v
-rate conversion (if needed)
+rate conversion (if required)
         |
         | 48 kHz stereo S16
         v
-rfauds2_submit_s16()
+RFAuds2 submit/poll adapter
         |
         v
-IOP ring buffer
-        |
-        v
-SPU2 DMA
+IOP queue -> render -> SPU2 DMA
 ```
 
-Keep emulation timing and hardware transport separate. An emulator should not
-change its emulated DSP/APU clock merely to match the SPU2 output rate.
+Do not change an emulated DSP/APU clock merely to match 48 kHz output timing.
+During an A/B backend comparison, keep the emulator's existing conversion and
+mixing unchanged so only transport changes.
 
-For a 32 kHz source, such as the SNES S-DSP path used by SNESticleRevive,
-RFAuds2 can either receive PCM that the emulator already converted to 48 kHz or
-use its own converter. During backend A/B testing, keep the existing emulator
-converter unchanged so the comparison isolates only the output transport.
+## Producer policy
 
-## Queue policy
+The blocking API is useful for simple applications that can wait for queue
+space. Emulators should normally use async submit/poll so a full audio queue
+does not stall useful EE work.
 
-Game/emulator audio should use lossless submission. When the configured IOP
-queue is full, RFAuds2 applies producer backpressure instead of discarding the
-unsent tail.
+An adapter must:
 
-An underrun is handled differently: the unavailable portion of the next
-512-frame hardware block is filled with zeroes. RFAuds2 never intentionally
-replays old PCM to hide a shortage.
+- preserve producer blocks larger than 960 frames;
+- submit at most 960 frames per async RPC;
+- retain the exact unaccepted tail;
+- poll during normal emulator work instead of spinning;
+- keep emulated timing independent of queue occupancy;
+- drain/flush safely at ROM, pause and backend transitions.
 
-A practical initial latency for emulator testing is about 43 ms. Before
-calling `rfauds2_start()`, queue at least three 512-frame blocks when possible.
-The IOP primes both hardware DMA halves from queued PCM at start, so a producer
-that prebuffers avoids beginning playback with zero-filled blocks and keeps one
-block of queue headroom for normal frame jitter.
+## Startup and latency
 
-The correct production default still needs real FAT/Slim PS2 measurements.
+A practical starting point is `rfauds2_set_latency_ms(43)`, which selects
+2048 queue frames (~42.67 ms). When practical, prebuffer three 512-frame blocks
+before `start()`. The production default still needs FAT/Slim measurements.
 
 ## Diagnostics
 
-Use `rfauds2_get_stats()` during an audio reproduction and record at least:
+Record at least:
 
-- `queued_frames` / `capacity_frames`
-- `min_queued_frames`
-- `max_queued_frames`
-- `underruns`
-- `overruns`
-- `refill_count`
-- `silent_frames`
+- `queued_frames` / `capacity_frames`;
+- `min_queued_frames` / `max_queued_frames`;
+- `underruns`;
+- `overruns`;
+- `refill_count`;
+- `silent_frames`;
+- `missed_refills`.
 
-If an audible cut coincides with an increment in `underruns` or
-`silent_frames`, the transport did not receive PCM quickly enough. If the
-counters remain stable, investigate the producer, resampler, emulated audio
-core, or another timing source instead of assuming the SPU2 transport failed.
+If `missed_refills` rises, the IOP refill thread missed a DMA deadline and the
+backend substituted a dedicated silence block. If underruns rise while missed
+refills do not, the render queue itself ran short. That distinction helps avoid
+blaming SPU2 transport for producer/resampler timing problems.
 
-Call `rfauds2_reset_stats()` immediately before a focused reproduction to make
-the diagnostic window unambiguous.
+Use `rfauds2_reset_stats()` immediately before a focused reproduction.
+
+## Backend ownership and transitions
+
+RFAuds2 requires exclusive direct-SPU2/DMA ownership while initialized. Do not
+leave audsrv/LIBSD streaming active concurrently.
+
+For a backend switch:
+
+1. stop the producer;
+2. collect any outstanding async RPC result;
+3. `rfauds2_stop()`;
+4. `rfauds2_flush()`;
+5. `rfauds2_shutdown()`;
+6. initialize the next audio stack.
+
+If returning to RFAuds2 while its IRX is still resident, call `rfauds2_bind()`.
 
 ## SNESticleRevive A/B
 
-An earlier experimental integration was described on
-`test/audio-mesence-parity-v1`. That branch was not available from the public
-repository during the 2026-10-02 audit; it is not evidence of an integration
-in current main.
-
-The `fix/async-pcm-transport` candidate adds the transport primitive only.
-Before changing the SNESticle backend, its adapter must retain blocks and
-unaccepted tails, poll during normal EE work, and drain safely on transitions.
-
-The intended comparison keeps these components identical:
+The intended comparison keeps this side identical:
 
 ```text
-SNES S-DSP -> existing SNESticle 32 kHz -> 48 kHz converter -> backend
+SNES S-DSP -> existing 32 kHz -> 48 kHz conversion -> backend
 ```
 
 Only the backend changes:
@@ -94,28 +95,22 @@ A: audsrv
 B: RFAuds2
 ```
 
-The RFAuds2 build uses the legacy `Aud_*` surface as a thin adapter, embeds
-`rfauds2.irx` in the ELF, and does not require audsrv, freesd or LIBSD for the
-game/menu PCM path.
-
-The first runtime targets are the games that exposed the existing audio
-problems, especially long continuous playback and transitions where short
-cuts were previously audible. Runtime conclusions must be based on actual
-emulator/console tests; successful compilation alone does not establish audio
-correctness.
+Before claiming a runtime improvement, validate long continuous playback,
+scene/ROM transitions, CPU-heavy sections and focused reproductions while
+recording queue/underrun/missed-refill stats.
 
 ## Hardware validation checklist
 
-Before a 1.0 release, validate at minimum:
+Before 1.0, validate at minimum:
 
 - one FAT PS2;
 - one Slim PS2;
 - long continuous playback;
-- repeated pause/resume/flush/ROM transitions;
-- low and high queue-latency settings;
+- repeated pause/resume/flush/backend transitions;
+- low/high queue latency;
 - sustained CPU-heavy emulator scenes;
-- no increasing underrun/overrun count during stable playback;
-- analog and digital audio output where practical.
+- stable queue diagnostics during clean playback;
+- analog and digital output where practical.
 
-NetherSX2 remains useful for development and regression checks, but it is not a
-replacement for retail PS2 validation.
+Emulators are useful development targets, but successful compilation or host
+transport tests do not establish real SPU2 timing correctness.

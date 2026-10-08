@@ -7,6 +7,11 @@
 #define RFAUDS2_RPC_PROTOCOL_VERSION 2u
 #define RFAUDS2_RPC_MAX_FRAMES 960u
 
+/* Shared wire-level result used by both the public EE API and IOP handler. */
+#ifndef RFAUDS2_ERROR_BUSY
+#define RFAUDS2_ERROR_BUSY (-4)
+#endif
+
 enum {
     RFAUDS2_RPC_INIT = 0,
     RFAUDS2_RPC_SUBMIT = 1,
@@ -19,11 +24,8 @@ enum {
     RFAUDS2_RPC_FLUSH = 8,
     RFAUDS2_RPC_SET_LATENCY = 9,
     RFAUDS2_RPC_RESET_STATS = 10,
-    /* Partial, nonblocking ring admission. Existing opcodes stay unchanged. */
     RFAUDS2_RPC_TRY_SUBMIT = 11,
-    /* Return RFAUDS2_RPC_PROTOCOL_VERSION without initializing the backend. */
     RFAUDS2_RPC_PROTOCOL = 12,
-    /* Release RFAuds2 audio resources. The RPC server remains resident. */
     RFAUDS2_RPC_SHUTDOWN = 13
 };
 

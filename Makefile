@@ -47,7 +47,7 @@ host-test: | $(BUILD)
 		src/ee/core.c tests/chunk_test.c \
 		-o $(BUILD)/rfauds2-chunk-test
 	$(BUILD)/rfauds2-chunk-test
-	cc -std=c99 -O2 -Wall -Wextra -Werror \
+	cc -std=c99 -O2 -Wall -Wextra -Werror -Wno-unused-function \
 		-Itests/transport_include -Itests/include -Iinclude \
 		tests/transport_test.c -o $(BUILD)/rfauds2-transport-test
 	$(BUILD)/rfauds2-transport-test

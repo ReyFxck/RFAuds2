@@ -1,9 +1,9 @@
 #include "irx_imports.h"
+#include "refill_state.h"
 #include "spu2_direct.h"
 
 #define RFAUDS2_SPU2_CORE 1u
 #define RFAUDS2_SPU2_MAX_VOLUME 0x3FFFu
-#define RFAUDS2_SILENCE_BLOCK 2u
 #define RFAUDS2_MAX_BLOCK_BYTES 2048u
 
 #define RFAUDS2_REG16(address) (*(volatile u16 *)(address))
@@ -87,12 +87,7 @@
 #define RFAUDS2_SPU2_EXT_INPUT (1u << 0)
 #define RFAUDS2_SPU2_DMA_MASK  (3u << 4)
 
-static volatile unsigned int g_active_source;
-static volatile unsigned int g_next_real_block;
-static volatile unsigned int g_refill_pending_mask;
-static volatile unsigned int g_block_ready_mask;
-static volatile unsigned int g_missed_refills;
-static volatile int g_running;
+static rfauds2_refill_state g_refill_state;
 static u32 g_buffer_address;
 static u32 g_block_bytes;
 static unsigned char g_silence_block[RFAUDS2_MAX_BLOCK_BYTES]
@@ -201,7 +196,7 @@ static void rfauds2_spu2_start_dma_source(unsigned int source)
     unsigned int core = RFAUDS2_SPU2_CORE;
     u32 address;
 
-    if (source == RFAUDS2_SILENCE_BLOCK)
+    if (source == RFAUDS2_REFILL_SILENCE_BLOCK)
         address = (u32)g_silence_block;
     else
         address = g_buffer_address + g_block_bytes * source;
@@ -218,36 +213,17 @@ static void rfauds2_spu2_start_dma_source(unsigned int source)
 
 static int rfauds2_spu2_dma_interrupt(void *arg)
 {
-    unsigned int completed;
-    unsigned int next;
-    unsigned int next_mask;
+    int signal_refill;
 
     (void)arg;
 
-    if (!g_running)
+    if (!g_refill_state.running)
         return 1;
 
-    completed = g_active_source;
-    if (completed < 2u)
-        g_refill_pending_mask |= 1u << completed;
+    signal_refill = rfauds2_refill_state_complete(&g_refill_state);
+    rfauds2_spu2_start_dma_source(g_refill_state.active_source);
 
-    next = g_next_real_block;
-    next_mask = 1u << next;
-
-    if ((g_block_ready_mask & next_mask) != 0u) {
-        g_block_ready_mask &= ~next_mask;
-        g_active_source = next;
-        g_next_real_block = 1u - next;
-    } else {
-        /* Never replay the old contents of an unrefilled half. Silence is a
-           dedicated DMA source, so a missed IOP deadline is deterministic. */
-        g_active_source = RFAUDS2_SILENCE_BLOCK;
-        ++g_missed_refills;
-    }
-
-    rfauds2_spu2_start_dma_source(g_active_source);
-
-    if (completed < 2u &&
+    if (signal_refill &&
         g_callback != (rfauds2_spu2_transfer_callback)0)
         g_callback(g_callback_arg);
 
@@ -301,12 +277,7 @@ int rfauds2_spu2_init(
         return -2;
     }
 
-    g_active_source = 0;
-    g_next_real_block = 1;
-    g_refill_pending_mask = 0;
-    g_block_ready_mask = 0;
-    g_missed_refills = 0;
-    g_running = 0;
+    rfauds2_refill_state_init(&g_refill_state);
     g_initialized = 1;
     return 0;
 }
@@ -335,14 +306,6 @@ int rfauds2_spu2_start_loop(void *buffer, unsigned int total_bytes)
     if (g_block_bytes > RFAUDS2_MAX_BLOCK_BYTES)
         return -3;
 
-    g_active_source = 0;
-    g_next_real_block = 1;
-    g_refill_pending_mask = 0;
-    /* Both real halves were primed by the caller. Block 0 is consumed first;
-       block 1 remains ready for the first interrupt. */
-    g_block_ready_mask = 1u << 1;
-    g_missed_refills = 0;
-
     RFAUDS2_SPU2_DMA_CHCR(core) &= ~RFAUDS2_SPU2_DMA_START;
     RFAUDS2_SPU2_CORE_ATTR(core) &= (u16)~RFAUDS2_SPU2_DMA_MASK;
 
@@ -350,7 +313,7 @@ int rfauds2_spu2_start_loop(void *buffer, unsigned int total_bytes)
     RFAUDS2_SPU2_TSA_LO(core) = 0;
     RFAUDS2_SPU2_XFER_CTRL(core) = (u16)(1u << core);
 
-    g_running = 1;
+    rfauds2_refill_state_start(&g_refill_state);
     rfauds2_spu2_start_dma_source(0);
     return 0;
 }
@@ -364,9 +327,7 @@ int rfauds2_spu2_stop(void)
         return -1;
 
     CpuSuspendIntr(&interrupt_state);
-    g_running = 0;
-    g_refill_pending_mask = 0;
-    g_block_ready_mask = 0;
+    rfauds2_refill_state_stop(&g_refill_state);
     RFAUDS2_SPU2_DMA_CHCR(core) &= ~RFAUDS2_SPU2_DMA_START;
     RFAUDS2_SPU2_XFER_CTRL(core) = 0;
     RFAUDS2_SPU2_CORE_ATTR(core) &= (u16)~RFAUDS2_SPU2_DMA_MASK;
@@ -396,16 +357,10 @@ int rfauds2_spu2_shutdown(void)
 int rfauds2_spu2_take_refill_block(void)
 {
     int interrupt_state;
-    int block = -1;
+    int block;
 
     CpuSuspendIntr(&interrupt_state);
-    if ((g_refill_pending_mask & 1u) != 0u) {
-        g_refill_pending_mask &= ~1u;
-        block = 0;
-    } else if ((g_refill_pending_mask & 2u) != 0u) {
-        g_refill_pending_mask &= ~2u;
-        block = 1;
-    }
+    block = rfauds2_refill_state_take_pending(&g_refill_state);
     CpuResumeIntr(interrupt_state);
 
     return block;
@@ -415,12 +370,8 @@ void rfauds2_spu2_mark_block_ready(unsigned int block)
 {
     int interrupt_state;
 
-    if (block >= 2u)
-        return;
-
     CpuSuspendIntr(&interrupt_state);
-    if (g_running)
-        g_block_ready_mask |= 1u << block;
+    rfauds2_refill_state_mark_ready(&g_refill_state, block);
     CpuResumeIntr(interrupt_state);
 }
 
@@ -430,8 +381,7 @@ unsigned int rfauds2_spu2_take_missed_refills(void)
     unsigned int missed;
 
     CpuSuspendIntr(&interrupt_state);
-    missed = g_missed_refills;
-    g_missed_refills = 0;
+    missed = rfauds2_refill_state_take_missed(&g_refill_state);
     CpuResumeIntr(interrupt_state);
 
     return missed;
@@ -439,5 +389,5 @@ unsigned int rfauds2_spu2_take_missed_refills(void)
 
 unsigned int rfauds2_spu2_active_block(void)
 {
-    return g_active_source;
+    return g_refill_state.active_source;
 }

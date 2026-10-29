@@ -110,8 +110,6 @@ static int StartThread(int id, void *arg)
 static int GetThreadId(void) { return 1; }
 static void FlushDcache(void) {}
 static void CpuEnableIntr(void) {}
-static void CpuSuspendIntr(int *state) { *state = 0; }
-static void CpuResumeIntr(int state) { (void)state; }
 
 #define _start test_module_start
 #include "../src/iop/src/main.c"
@@ -274,6 +272,7 @@ static void test_protocol_and_latency(void)
 
     assert(rfauds2_bind() == 0);
     assert(spu_initialized);
+    assert(g_play_mutex >= 0);
     assert(rfauds2_set_latency_ms(43) == 0);
     assert(rfauds2_get_stats(&stats) == 0);
     assert(stats.capacity_frames == 2048u);
@@ -340,6 +339,22 @@ static void test_missed_refill_stats(void)
     assert(stats.missed_refills >= 2u);
     assert(stats.underruns == underruns + 2u);
     assert(stats.silent_frames == silent + 1024u);
+}
+
+static void test_missed_refill_stats_saturate(void)
+{
+    rfauds2_stats stats;
+
+    g_missed_refills = ~0u - 1u;
+    g_underruns = ~0u - 1u;
+    g_silent_frames = ~0u - 1u;
+    spu_missed_refills = 2;
+
+    assert(rfauds2_get_stats(&stats) == 0);
+    assert(stats.missed_refills == ~0u);
+    assert(stats.underruns == ~0u);
+    assert(stats.silent_frames == ~0u);
+    assert(rfauds2_reset_stats() == 0);
 }
 
 static void test_stream_and_partial_admission(void)
@@ -441,6 +456,7 @@ static void test_shutdown_and_rebind(void)
     assert(g_ring_mutex < 0);
     assert(g_space_sema < 0);
     assert(g_transfer_sema < 0);
+    assert(g_play_mutex < 0);
     assert(rfauds2_start() < 0);
     assert(rfauds2_bind() == 0);
     assert(spu_initialized);
@@ -455,13 +471,21 @@ static void test_init_cleanup_failures(void)
     fail_create_sema = 2;
     reply = rpc_handler(RFAUDS2_RPC_INIT, 0, 0);
     assert(reply->result < 0);
-    assert(g_ring_mutex < 0 && g_space_sema < 0 && g_transfer_sema < 0);
+    assert(g_ring_mutex < 0 && g_space_sema < 0 &&
+        g_transfer_sema < 0 && g_play_mutex < 0);
+
+    fail_create_sema = 4;
+    reply = rpc_handler(RFAUDS2_RPC_INIT, 0, 0);
+    assert(reply->result < 0);
+    assert(g_ring_mutex < 0 && g_space_sema < 0 &&
+        g_transfer_sema < 0 && g_play_mutex < 0);
 
     fail_create_thread = 1;
     reply = rpc_handler(RFAUDS2_RPC_INIT, 0, 0);
     assert(reply->result == -3);
     assert(!spu_initialized);
-    assert(g_ring_mutex < 0 && g_space_sema < 0 && g_transfer_sema < 0);
+    assert(g_ring_mutex < 0 && g_space_sema < 0 &&
+        g_transfer_sema < 0 && g_play_mutex < 0);
 
     fail_start_thread = 1;
     reply = rpc_handler(RFAUDS2_RPC_INIT, 0, 0);
@@ -481,6 +505,7 @@ int main(void)
     test_async_and_busy_guards();
     test_start_rollback();
     test_missed_refill_stats();
+    test_missed_refill_stats_saturate();
     test_stream_and_partial_admission();
     test_latency_shrink_guard();
     test_wire_validation();

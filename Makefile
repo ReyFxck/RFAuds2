@@ -30,7 +30,7 @@ $(BUILD)/core.o: src/ee/core.c | $(BUILD)
 $(BUILD)/librfauds2.a: $(EE_OBJS)
 	$(EE_AR) rcs $@ $^
 
-$(BUILD)/rfauds2.irx: src/iop/src/main.c src/iop/src/spu2_direct.c src/iop/src/spu2_direct.h src/iop/src/imports.lst src/iop/src/irx_imports.h include/rfauds2/rpc.h | $(BUILD)
+$(BUILD)/rfauds2.irx: src/iop/src/main.c src/iop/src/spu2_direct.c src/iop/src/spu2_direct.h src/iop/src/refill_state.c src/iop/src/refill_state.h src/iop/src/imports.lst src/iop/src/irx_imports.h include/rfauds2/rpc.h | $(BUILD)
 	$(MAKE) -C src/iop clean all PS2SDKSRC="$(PS2SDKSRC)" PS2SDK="$(PS2SDK)"
 	cp src/iop/irx/rfauds2.irx $@
 
@@ -47,10 +47,14 @@ host-test: | $(BUILD)
 		src/ee/core.c tests/chunk_test.c \
 		-o $(BUILD)/rfauds2-chunk-test
 	$(BUILD)/rfauds2-chunk-test
-	cc -std=c99 -O2 -Wall -Wextra -Werror -Wno-unused-function \
+	cc -std=c99 -O2 -Wall -Wextra -Werror \
 		-Itests/transport_include -Itests/include -Iinclude \
 		tests/transport_test.c -o $(BUILD)/rfauds2-transport-test
 	$(BUILD)/rfauds2-transport-test
+	cc -std=c99 -O2 -Wall -Wextra -Werror \
+		src/iop/src/refill_state.c tests/refill_state_test.c \
+		-o $(BUILD)/rfauds2-refill-state-test
+	$(BUILD)/rfauds2-refill-state-test
 
 check: all
 	@test -s $(BUILD)/librfauds2.a

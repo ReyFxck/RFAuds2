@@ -60,6 +60,11 @@ has an explicit ready state. The refill thread writes a completed half, calls
 `FlushDcache()`, then publishes that half as ready. The interrupt handler never
 starts DMA from a half before publication.
 
+The pending/ready/silence transition logic is isolated from the SPU2 register
+code as a deterministic state machine. Host regressions drive missed deadlines,
+silence recovery, stop/restart and counter saturation through that same code
+linked into the IRX.
+
 This ordering closes the old cache race where interrupts were re-enabled before
 cache writeback and DMA could observe stale memory.
 
@@ -81,9 +86,11 @@ catches up.
 transactional: if hardware start fails, queue indices and diagnostic counters
 are restored.
 
-`stop()` disables DMA and clears pending refill ownership before the public
-started state is dropped. A semaphore token queued just before stop therefore
-cannot consume additional PCM after playback has stopped.
+The refill thread and `start()`, `pause()`, `resume()`, `flush()`, `stop()` and
+`shutdown()` share a playback lifecycle mutex. `stop()` therefore waits for an
+in-flight refill to finish, disables DMA and clears pending ownership as one
+serialized transition. A queued semaphore token from the previous generation
+cannot consume or publish PCM after a later stop/restart.
 
 `shutdown()` stops playback, terminates/deletes the playback thread, releases
 its semaphores and releases RFAuds2's SPU2 DMA interrupt handler. The RPC server
@@ -118,3 +125,7 @@ Stats separate producer starvation from IOP scheduling failure:
 - overrun: producer met configured queue backpressure;
 - min/max occupancy: observed queue envelope;
 - refill/silent counters: workload and silence inserted by the backend.
+
+All public counters are read and updated under the ring mutex. Missed-refill
+totals use saturating arithmetic so a long-running stream cannot wrap telemetry
+back to a misleading small value.

@@ -1,5 +1,6 @@
 #include "irx_imports.h"
 #include "spu2_direct.h"
+#include <limits.h>
 #include <rfauds2/rpc.h>
 
 #define RFAUDS2_RING_FRAMES 4096u
@@ -39,6 +40,7 @@ static s16 g_render_right[RFAUDS2_BLOCK_FRAMES]
 static int g_ring_mutex = -1;
 static int g_space_sema = -1;
 static int g_transfer_sema = -1;
+static int g_play_mutex = -1;
 static int g_rpc_ready_sema = -1;
 static int g_play_thread = -1;
 
@@ -77,15 +79,42 @@ static void delete_semaphore_if_valid(int *id)
     }
 }
 
-static void sync_missed_refills(void)
+static u32 add_u32_saturating(u32 value, u32 increment)
+{
+    if (increment > UINT_MAX - value)
+        return UINT_MAX;
+
+    return value + increment;
+}
+
+static void sync_missed_refills_locked(void)
 {
     u32 missed = rfauds2_spu2_take_missed_refills();
 
     if (missed != 0) {
-        g_missed_refills += missed;
-        g_underruns += missed;
-        g_silent_frames += missed * RFAUDS2_BLOCK_FRAMES;
+        u32 silent;
+
+        if (missed > UINT_MAX / RFAUDS2_BLOCK_FRAMES)
+            silent = UINT_MAX;
+        else
+            silent = missed * RFAUDS2_BLOCK_FRAMES;
+
+        g_missed_refills = add_u32_saturating(g_missed_refills, missed);
+        g_underruns = add_u32_saturating(g_underruns, missed);
+        g_silent_frames = add_u32_saturating(g_silent_frames, silent);
     }
+}
+
+static void sync_missed_refills(void)
+{
+    if (g_ring_mutex < 0) {
+        (void)rfauds2_spu2_take_missed_refills();
+        return;
+    }
+
+    WaitSema(g_ring_mutex);
+    sync_missed_refills_locked();
+    SignalSema(g_ring_mutex);
 }
 
 static void stats_reset_locked(void)
@@ -207,16 +236,16 @@ static void play_thread(void *arg)
         int block;
 
         WaitSema(g_transfer_sema);
+        WaitSema(g_play_mutex);
 
         /* stop() clears the low-level pending mask before dropping started.
            Ignore a semaphore token that was already queued before the stop. */
-        if (!g_started)
+        if (!g_started) {
+            SignalSema(g_play_mutex);
             continue;
+        }
 
         while ((block = rfauds2_spu2_take_refill_block()) >= 0) {
-            if (!g_started)
-                break;
-
             fill_render_block();
             copy_render_to_spu(g_spu_buffer + ((u32)block << 11));
 
@@ -226,6 +255,8 @@ static void play_thread(void *arg)
             FlushDcache();
             rfauds2_spu2_mark_block_ready((u32)block);
         }
+
+        SignalSema(g_play_mutex);
     }
 }
 
@@ -241,6 +272,7 @@ static void audio_cleanup_partial(void)
     delete_semaphore_if_valid(&g_transfer_sema);
     delete_semaphore_if_valid(&g_space_sema);
     delete_semaphore_if_valid(&g_ring_mutex);
+    delete_semaphore_if_valid(&g_play_mutex);
     g_initialized = 0;
     g_started = 0;
     g_paused = 0;
@@ -264,6 +296,10 @@ static int audio_initialize(void)
 
     g_transfer_sema = create_semaphore(0, 1);
     if (g_transfer_sema < 0)
+        goto fail;
+
+    g_play_mutex = create_semaphore(1, 1);
+    if (g_play_mutex < 0)
         goto fail;
 
     spu2_result = rfauds2_spu2_init(transfer_complete, 0);
@@ -386,6 +422,8 @@ static int audio_start(void)
     if (g_started)
         return 0;
 
+    WaitSema(g_play_mutex);
+
     WaitSema(g_ring_mutex);
     saved_read = g_read_frame;
     saved_write = g_write_frame;
@@ -425,12 +463,14 @@ static int audio_start(void)
         g_refill_count = saved_refills;
         g_silent_frames = saved_silent;
         SignalSema(g_ring_mutex);
+        SignalSema(g_play_mutex);
         return -2;
     }
 
     g_started = 1;
     g_paused = 0;
     update_volume();
+    SignalSema(g_play_mutex);
     return 0;
 }
 
@@ -439,8 +479,10 @@ static int audio_pause(void)
     if (!g_initialized || !g_started)
         return -1;
 
+    WaitSema(g_play_mutex);
     g_paused = 1;
     update_volume();
+    SignalSema(g_play_mutex);
     return 0;
 }
 
@@ -449,8 +491,10 @@ static int audio_resume(void)
     if (!g_initialized || !g_started)
         return -1;
 
+    WaitSema(g_play_mutex);
     g_paused = 0;
     update_volume();
+    SignalSema(g_play_mutex);
     return 0;
 }
 
@@ -461,20 +505,26 @@ static int audio_stop(void)
     if (!g_initialized)
         return -1;
 
+    WaitSema(g_play_mutex);
+
     if (!g_started) {
         g_paused = 0;
         update_volume();
+        SignalSema(g_play_mutex);
         return 0;
     }
 
     result = rfauds2_spu2_stop();
-    if (result < 0)
+    if (result < 0) {
+        SignalSema(g_play_mutex);
         return -2;
+    }
 
     g_started = 0;
     g_paused = 0;
     sync_missed_refills();
     update_volume();
+    SignalSema(g_play_mutex);
     return 0;
 }
 
@@ -483,6 +533,7 @@ static int audio_flush(void)
     if (!g_initialized)
         return -1;
 
+    WaitSema(g_play_mutex);
     WaitSema(g_ring_mutex);
 
     g_read_frame = 0;
@@ -496,6 +547,7 @@ static int audio_flush(void)
     stats_note_queue_locked();
     SignalSema(g_ring_mutex);
     SignalSema(g_space_sema);
+    SignalSema(g_play_mutex);
 
     return 0;
 }
@@ -507,15 +559,25 @@ static int audio_shutdown(void)
     if (!g_initialized)
         return 0;
 
+    WaitSema(g_play_mutex);
+
     if (g_started) {
         result = rfauds2_spu2_stop();
-        if (result < 0)
+        if (result < 0) {
+            SignalSema(g_play_mutex);
             return -1;
+        }
     }
 
     g_started = 0;
     g_paused = 0;
     sync_missed_refills();
+
+    result = rfauds2_spu2_shutdown();
+    if (result < 0) {
+        SignalSema(g_play_mutex);
+        return -2;
+    }
 
     if (g_play_thread >= 0) {
         TerminateThread(g_play_thread);
@@ -523,13 +585,10 @@ static int audio_shutdown(void)
         g_play_thread = -1;
     }
 
-    result = rfauds2_spu2_shutdown();
-    if (result < 0)
-        return -2;
-
     delete_semaphore_if_valid(&g_transfer_sema);
     delete_semaphore_if_valid(&g_space_sema);
     delete_semaphore_if_valid(&g_ring_mutex);
+    delete_semaphore_if_valid(&g_play_mutex);
 
     g_initialized = 0;
     return 0;
@@ -589,7 +648,14 @@ static int audio_reset_stats(void)
 
 static void fill_reply(int result)
 {
-    sync_missed_refills();
+    int have_ring_mutex = g_ring_mutex >= 0;
+
+    if (have_ring_mutex) {
+        WaitSema(g_ring_mutex);
+        sync_missed_refills_locked();
+    } else {
+        (void)rfauds2_spu2_take_missed_refills();
+    }
 
     g_rpc_reply.result = result;
     g_rpc_reply.queued_frames = g_queued_frames;
@@ -610,6 +676,9 @@ static void fill_reply(int result)
         g_rpc_reply.flags |= RFAUDS2_RPC_FLAG_STARTED;
     if (g_paused)
         g_rpc_reply.flags |= RFAUDS2_RPC_FLAG_PAUSED;
+
+    if (have_ring_mutex)
+        SignalSema(g_ring_mutex);
 }
 
 static void *rpc_handler(int function, void *buffer, int length)

@@ -17,6 +17,7 @@
 - [x] dedicated silence DMA fallback instead of stale-block replay
 - [x] transactional start priming rollback on hardware-start failure
 - [x] explicit shutdown/resource cleanup path
+- [x] serialized refill vs. pause/flush/stop/restart lifecycle transitions
 - [x] reject latency shrink below current queue occupancy
 - [ ] long-duration emulator stress test
 - [ ] FAT PS2 validation
@@ -41,6 +42,7 @@
 ## Build / release quality
 
 - [x] host regressions with warnings as errors
+- [x] deterministic host coverage of the IRX refill/silence state machine
 - [x] EE and IOP cross-build CI
 - [x] generated EE dependency files (`-MMD -MP`)
 - [x] pinned CI container digest

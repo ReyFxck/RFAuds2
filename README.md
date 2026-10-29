@@ -33,6 +33,8 @@ Current source version: **0.1.0-alpha.2**.
 - explicit underrun-to-silence behavior;
 - stale-DMA protection: a missed refill deadline uses a dedicated silence
   block instead of replaying an old PCM block;
+- serialized playback lifecycle transitions, so an old refill cannot cross a
+  later stop/restart boundary;
 - observable queue depth, underruns, overruns, min/max occupancy, refill count,
   silent frames and missed refill deadlines;
 - an explicit shutdown path that releases RFAuds2's playback thread,
@@ -116,7 +118,7 @@ build/rfauds2.irx
 Useful targets:
 
 ```sh
-make host-test   # deterministic host regressions
+make host-test   # deterministic audio, transport and refill-state regressions
 make check       # host/cross-build verification
 make package     # headers, library, IRX, docs, examples, license/version
 ```

@@ -6,12 +6,13 @@ EE_CC ?= $(shell command -v ee-gcc 2>/dev/null || command -v mips64r5900el-ps2-e
 EE_AR ?= $(shell command -v ee-ar 2>/dev/null || command -v mips64r5900el-ps2-elf-ar 2>/dev/null)
 
 BUILD := build
-EE_CFLAGS := -G0 -O2 -Wall -Wextra -D_EE \
+EE_CFLAGS := -G0 -O2 -Wall -Wextra -D_EE -MMD -MP \
     -Iinclude -I$(PS2SDK)/ee/include -I$(PS2SDK)/common/include
 
 EE_OBJS := \
     $(BUILD)/client.o \
     $(BUILD)/core.o
+EE_DEPS := $(EE_OBJS:.o=.d)
 
 .PHONY: all clean irx check package host-test
 
@@ -20,16 +21,16 @@ all: $(BUILD)/librfauds2.a $(BUILD)/rfauds2.irx
 $(BUILD):
 	mkdir -p $@
 
-$(BUILD)/client.o: src/ee/client.c include/rfauds2/rfauds2.h include/rfauds2/rpc.h | $(BUILD)
+$(BUILD)/client.o: src/ee/client.c | $(BUILD)
 	$(EE_CC) $(EE_CFLAGS) -c $< -o $@
 
-$(BUILD)/core.o: src/ee/core.c include/rfauds2/rfauds2.h | $(BUILD)
+$(BUILD)/core.o: src/ee/core.c | $(BUILD)
 	$(EE_CC) $(EE_CFLAGS) -c $< -o $@
 
 $(BUILD)/librfauds2.a: $(EE_OBJS)
 	$(EE_AR) rcs $@ $^
 
-$(BUILD)/rfauds2.irx: src/iop/src/main.c src/iop/src/spu2_direct.c src/iop/src/spu2_direct.h src/iop/src/imports.lst src/iop/src/irx_imports.h include/rfauds2/rpc.h | $(BUILD)
+$(BUILD)/rfauds2.irx: src/iop/src/main.c src/iop/src/spu2_direct.c src/iop/src/spu2_direct.h src/iop/src/refill_state.c src/iop/src/refill_state.h src/iop/src/imports.lst src/iop/src/irx_imports.h include/rfauds2/rpc.h | $(BUILD)
 	$(MAKE) -C src/iop clean all PS2SDKSRC="$(PS2SDKSRC)" PS2SDK="$(PS2SDK)"
 	cp src/iop/irx/rfauds2.irx $@
 
@@ -42,9 +43,18 @@ host-test: | $(BUILD)
 		-o $(BUILD)/rfauds2-host-test
 	$(BUILD)/rfauds2-host-test
 	cc -std=c99 -O2 -Wall -Wextra -Werror \
+		-Itests/include -Iinclude \
+		src/ee/core.c tests/chunk_test.c \
+		-o $(BUILD)/rfauds2-chunk-test
+	$(BUILD)/rfauds2-chunk-test
+	cc -std=c99 -O2 -Wall -Wextra -Werror \
 		-Itests/transport_include -Itests/include -Iinclude \
 		tests/transport_test.c -o $(BUILD)/rfauds2-transport-test
 	$(BUILD)/rfauds2-transport-test
+	cc -std=c99 -O2 -Wall -Wextra -Werror \
+		src/iop/src/refill_state.c tests/refill_state_test.c \
+		-o $(BUILD)/rfauds2-refill-state-test
+	$(BUILD)/rfauds2-refill-state-test
 
 check: all
 	@test -s $(BUILD)/librfauds2.a
@@ -52,11 +62,22 @@ check: all
 	@echo "RFAuds2 build OK"
 
 package: check
-	mkdir -p $(BUILD)/package/include/rfauds2 $(BUILD)/package/lib $(BUILD)/package/iop
+	rm -rf $(BUILD)/package
+	mkdir -p \
+		$(BUILD)/package/include/rfauds2 \
+		$(BUILD)/package/lib \
+		$(BUILD)/package/iop \
+		$(BUILD)/package/docs \
+		$(BUILD)/package/examples
 	cp include/rfauds2/*.h $(BUILD)/package/include/rfauds2/
 	cp $(BUILD)/librfauds2.a $(BUILD)/package/lib/
 	cp $(BUILD)/rfauds2.irx $(BUILD)/package/iop/
+	cp LICENSE README.md VERSION $(BUILD)/package/
+	cp docs/*.md $(BUILD)/package/docs/
+	cp examples/*.c $(BUILD)/package/examples/
 
 clean:
 	rm -rf $(BUILD)
 	$(MAKE) -C src/iop clean PS2SDKSRC="$(PS2SDKSRC)" PS2SDK="$(PS2SDK)" || true
+
+-include $(EE_DEPS)

@@ -1,13 +1,15 @@
-# Async transport candidate, 2026-10-02
+# Async transport implementation record, 2026-10-02
 
 Base: main `6787ef5380e43fca79b53419af66595f473b5118`.
-Candidate branch: `fix/async-pcm-transport`.
+Implemented on `fix/async-pcm-transport` and merged by PR #1 at `f82e096`.
+The later lifecycle/refill hardening was merged by PR #2 at `38cd7ae`.
 
 The original EE PCM API calls SIFRPC in blocking mode. Its IOP submit handler
 waits for consumer space; a full paused/stopped queue can therefore prevent
 the same server thread from handling a later start/resume/flush request.
 
-The candidate adds `rfauds2_submit_s16_async()` and `rfauds2_submit_poll()`.
+The merged implementation adds `rfauds2_submit_s16_async()` and
+`rfauds2_submit_poll()`.
 One copied, aligned block (up to 960 frames) is sent with NOWAIT. The new
 IOP TRY_SUBMIT command admits only the available prefix and returns its
 length without a space wait. The producer owns and retries the tail.
@@ -45,10 +47,10 @@ during useful EE work, and lifecycle handling. Keep its current conversion
 and emulated mixer unchanged for the first backend A/B. Spawn's intro has
 not been reproduced because its ROM was not supplied.
 
-This completes a bounded asynchronous PCM transport primitive, not the whole
-audio-module roadmap or emulator migration. FAT/Slim tests, long playback,
-hardware refill timing and lifecycle stress remain necessary before main
-adoption.
+This completed the bounded asynchronous PCM transport primitive now present on
+`main`; it did not complete every integration and hardware-validation item.
+FAT/Slim tests, long playback, hardware refill timing and lifecycle stress remain
+useful release evidence.
 
 The 2026-10-02 follow-up also adds asynchronous stats launch/poll and a
 separate cached snapshot refreshed by completed successful replies. An

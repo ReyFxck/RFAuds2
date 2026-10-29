@@ -62,6 +62,7 @@
 
 ## 1.0 gate
 
-Do not call the backend production-ready until FAT + Slim hardware validation,
-long-duration stress, repeated lifecycle transitions and default-latency tuning
-have been completed with stable underrun/missed-refill diagnostics.
+RFAuds2 is already functional and stable for its supported 48 kHz stereo S16
+path. The 1.0 gate records broader hardware and release validation: FAT + Slim
+testing, long-duration stress, repeated lifecycle transitions and default-latency
+tuning with stable underrun/missed-refill diagnostics.

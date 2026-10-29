@@ -6,16 +6,16 @@ Modern low-latency PCM streaming for PlayStation 2.
 
 RFAuds2 is a small audio backend and helper library for emulators, game
 engines and other real-time PS2 software that need predictable continuous PCM
-streaming without using `audsrv` at runtime. It originated as the EF2Audio
-subsystem in [EF2SDK](https://github.com/ReyFxck/EF2SDK) and was split out so
-the transport, resampling and diagnostics can evolve independently.
+streaming without using `audsrv` at runtime. It combines a direct IOP/SPU2
+streaming backend with bounded EE transport, conversion, mixing and diagnostics.
 
-> **Status:** pre-1.0 / experimental. The code cross-builds in CI and the host
-> regressions exercise the converter, mixer and EE/IOP transport contract.
-> Real FAT/Slim PS2 validation and long-duration hardware stress testing are
-> still required before the backend should be treated as production-ready.
+> **Status:** stable and functional for the supported 48 kHz stereo S16 path.
+> CI cross-builds the EE library and IOP IRX, while deterministic host
+> regressions cover conversion, mixing, transport, refill and lifecycle behavior.
+> FAT/Slim measurements and long-duration hardware stress remain release-quality
+> validation work; they do not make the current backend an experiment.
 
-Current source version: **0.1.0-alpha.2**.
+Current source version: **0.1.0**.
 
 ## What RFAuds2 provides
 
@@ -130,9 +130,13 @@ Embed `rfauds2.irx` in the EE executable (or load it yourself), then:
 ```c
 #include <rfauds2/rfauds2.h>
 
+/* PS2SDK bin2c output for: bin2c rfauds2.irx rfauds2_irx.c rfauds2_irx */
+extern unsigned char rfauds2_irx[];
+extern unsigned int size_rfauds2_irx;
+
 rfauds2_stats stats;
 
-if (rfauds2_init(rfauds2_irx, rfauds2_irx_size) < 0)
+if (rfauds2_init(rfauds2_irx, size_rfauds2_irx) < 0)
     return -1;
 
 /* 43 ms maps to 2048 frames ~= 42.67 ms. */
@@ -198,7 +202,7 @@ The integer `latency_ms` statistic is rounded to the nearest millisecond, so
 Shrinking capacity below PCM already queued returns `RFAUDS2_ERROR_BUSY`.
 Drain or flush first instead of exposing `queued_frames > capacity_frames`.
 
-For emulator experiments, 43 ms with a three-block prebuffer is a reasonable
+For emulator integrations, 43 ms with a three-block prebuffer is a reasonable
 starting point. The production default still needs real FAT/Slim measurements.
 
 ## Underrun and refill behavior
@@ -272,7 +276,7 @@ src/ee/              EE client, resampling and mixing helpers
 src/iop/             rfauds2.irx and direct SPU2/DMA backend
 tests/               host audio and EE/IOP transport regressions
 Makefile             build, test and packaging entry points
-VERSION              current pre-release source version
+VERSION              current source version
 ```
 
 ## Validation status
